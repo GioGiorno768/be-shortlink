@@ -11,50 +11,53 @@ use Illuminate\Support\Str;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
 use App\Models\Link;
+use App\Models\User;
 use App\Models\View;
 use Stevebauman\Location\Facades\Location;
 use Illuminate\Support\Facades\Log;
 use Laravel\Sanctum\PersonalAccessToken;
+use Illuminate\Support\Facades\RateLimiter;
+
 
 class LinkController extends Controller
 {
-public function index(Request $request)
-{
-    $user = $request->user();
-    $query = Link::withCount(['views as total_views'])
-        ->where('user_id', $user->id);
+    public function index(Request $request)
+    {
+        $user = $request->user();
+        $query = Link::withCount(['views as total_views'])
+            ->where('user_id', $user->id);
 
-    // Search
-    if ($search = $request->input('search')) {
-        $query->where(function ($q) use ($search) {
-            $q->where('title', 'like', "%{$search}%")
-                // ->orWhere('alias', 'like', "%{$search}%")
-                ->orWhere('code', 'like', "%{$search}%");
-        });
+        // Search
+        if ($search = $request->input('search')) {
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%")
+                    // ->orWhere('alias', 'like', "%{$search}%")
+                    ->orWhere('code', 'like', "%{$search}%");
+            });
+        }
+
+        // Filter by status
+        if ($status = $request->input('status')) {
+            $query->where('status', $status);
+        }
+
+        // Filter top links (by total views)
+        if ($request->input('filter') === 'top_links') {
+            $query->orderByDesc('total_views');
+        }
+
+        // Filter berdasarkan penghasilan (earned)
+        if ($request->input('filter') === 'top_earned') {
+            $query->withSum('views as total_earned', 'earned')
+                ->orderByDesc('total_earned');
+        }
+
+        // Pagination
+        $perPage = $request->input('per_page', 10);
+        $links = $query->latest()->paginate($perPage);
+
+        return response()->json($links);
     }
-
-    // Filter by status
-    if ($status = $request->input('status')) {
-        $query->where('status', $status);
-    }
-
-    // Filter top links (by total views)
-    if ($request->input('filter') === 'top_links') {
-        $query->orderByDesc('total_views');
-    }
-
-    // Filter berdasarkan penghasilan (earned)
-    if ($request->input('filter') === 'top_earned') {
-        $query->withSum('views as total_earned', 'earned')
-              ->orderByDesc('total_earned');
-    }
-
-    // Pagination
-    $perPage = $request->input('per_page', 10);
-    $links = $query->latest()->paginate($perPage);
-
-    return response()->json($links);
-}
 
 
     // ==============================
@@ -70,6 +73,8 @@ public function index(Request $request)
             'alias' => 'nullable|string|max:20|alpha_dash|unique:links,code',
             'ad_level' => 'nullable|integer|min:1|max:5',
         ]);
+
+        $ip = $request->ip() === '127.0.0.1' ? '36.84.69.10' : $request->ip();
 
         $user = null;
         $token = $request->bearerToken(); // ambil token dari header
@@ -106,6 +111,7 @@ public function index(Request $request)
             try {
                 $link = Link::create([
                     'user_id' => $userId,
+                    'creator_ip' => $ip,
                     'original_url' => $validated['original_url'],
                     'code' => $code,
                     'title' => $validated['title'] ?? null,
@@ -183,70 +189,113 @@ public function index(Request $request)
     // ==============================
     // 2️⃣ SHOW — Generate Token & Simpan ke Redis
     // ==============================
-    public function show($code)
+    public function show($code, Request $request)
     {
-        // Coba ambil link dari Redis dulu
-        $cachedLink = Cache::get("link:{$code}");
+        try {
+            // 🧱 1️⃣ Ambil data dari cache Redis (jika tersedia)
+            $cachedLink = Cache::get("link:{$code}");
 
-        if (!$cachedLink) {
-            $link = Link::where('code', $code)->firstOrFail();
-            $cachedLink = [
-                'id' => $link->id,
-                'original_url' => $link->original_url,
-                'user_id' => $link->user_id,
-                'password' => $link->password,
-                // 'expired_at' => $link->expired_at, 
-                'earn_per_click' => $link->earn_per_click,
-            ];
-            // Simpan ulang di Redis agar cepat diakses berikutnya
-            Cache::put("link:{$code}", $cachedLink, now()->addMinutes(10));
+            if (!$cachedLink) {
+                $link = Link::where('code', $code)->firstOrFail();
+
+                // 🔒 2️⃣ Cek apakah link sudah kedaluwarsa
+                if ($link->expired_at && now()->greaterThan($link->expired_at)) {
+                    return response()->json([
+                        'error' => 'This link has expired.'
+                    ], 410);
+                }
+
+                // 📦 Simpan ke Redis untuk akses cepat
+                $cachedLink = [
+                    'id' => $link->id,
+                    'original_url' => $link->original_url,
+                    'user_id' => $link->user_id,
+                    'password' => $link->password,
+                    'earn_per_click' => $link->earn_per_click,
+                ];
+
+                Cache::put("link:{$code}", $cachedLink, now()->addMinutes(10));
+            }
+
+            // 🧩 3️⃣ Buat token unik & simpan berdasarkan IP dan User-Agent
+            $token = Str::uuid()->toString();
+            $ip = $request->ip();
+            $userAgent = $request->header('User-Agent');
+            $tokenKey = "token:{$code}:" . md5("{$ip}-{$userAgent}");
+
+            Cache::put($tokenKey, [
+                'token' => $token,
+                'ip' => $ip,
+                'user_agent' => $userAgent,
+                'created_at' => now()
+            ], now()->addSeconds(120));
+
+            // 🛡️ 4️⃣ Rate limiting (maks 3 request per menit per IP)
+            $rateKey = "rate:{$ip}:{$code}";
+            if (RateLimiter::tooManyAttempts($rateKey, 3)) {
+                return response()->json([
+                    'error' => 'Too many requests. Please wait a moment.'
+                ], 429);
+            }
+            RateLimiter::hit($rateKey, 60); // 1 menit
+
+            // 📈 5️⃣ Catat tampilan awal (pre-view) ringan ke Redis
+            Cache::increment("preview:{$code}:count");
+
+            // 💬 6️⃣ Kirim response ke frontend
+            return response()->json([
+                'ads' => [
+                    'https://ads1.example.com',
+                    'https://ads2.example.com',
+                ],
+                'token' => $token,
+                'wait_time' => 10,
+                'password' => $cachedLink['password'],
+                'message' => 'Please wait 10 seconds before continuing.'
+            ]);
+
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            // 🚫 7️⃣ Jika link tidak ditemukan
+            return response()->json([
+                'error' => 'Shortlink not found.'
+            ], 404);
+        } catch (\Exception $e) {
+            // ⚠️ 8️⃣ Fallback error umum
+            Log::error('Error in show(): ' . $e->getMessage(), [
+                'code' => $code,
+                'ip' => $request->ip()
+            ]);
+
+            return response()->json([
+                'error' => 'Internal server error.'
+            ], 500);
         }
-
-        // Generate token unik & simpan ke Redis 60 detik
-        $token = Str::uuid()->toString();
-
-        // menyimpan token
-        Cache::put("token:{$code}", [
-            'token' => $token,
-            'created_at' => now()
-        ], now()->addSeconds(120));
-
-
-        return response()->json([
-            'ads' => [
-                'https://example.com/ads1',
-                'https://example.com/ads2',
-            ],
-            'token' => $token,
-            'wait_time' => 10,
-            'pw' => $cachedLink['password'],
-            'message' => 'Please wait 10 seconds before continuing.',
-        ]);
     }
+
 
     // ==============================
     // 3️⃣ CONTINUE — Validasi Token dari Redis
     // ==============================
     public function continue($code, Request $request)
     {
+        // === 1️⃣ Rate Limiting (anti spam / bot)
+        $ip = $request->ip() === '127.0.0.1' ? '36.84.69.10' : $request->ip();
+        if (RateLimiter::tooManyAttempts("continue:{$ip}", 3)) {
+            return response()->json(['error' => 'Too many attempts. Try again later.'], 429);
+        }
+        RateLimiter::hit("continue:{$ip}", 60);
+
+        // === 2️⃣ Ambil token & link dari cache / DB
         $cachedToken = Cache::get("token:{$code}");
         $cachedLink = Cache::get("link:{$code}");
 
-        // Ambil data link dari Redis atau DB jika cache kosong
         $link = $cachedLink
-            ? (object) $cachedLink
+            ? (object) array_merge(['id' => null], $cachedLink)
             : Link::where('code', $code)->firstOrFail();
 
-        if (!isset($link->id)) {
-            $link = Link::where('code', $code)->first();
-        }
-
-
-        // ✅ Tambahan: Cek apakah link memiliki password
+        // === 3️⃣ Validasi Password (jika ada)
         if (!empty($link->password)) {
             $inputPassword = $request->input('password');
-
-            // Jika tidak ada password dikirim → minta password dulu
             if (!$inputPassword) {
                 return response()->json([
                     'requires_password' => true,
@@ -254,50 +303,40 @@ public function index(Request $request)
                 ], 401);
             }
 
-            // Jika password salah
             if ($inputPassword !== $link->password) {
-                return response()->json([
-                    'error' => 'Incorrect password.',
-                ], 403);
+                return response()->json(['error' => 'Incorrect password.'], 403);
             }
         }
 
-        Log::info("Token cached for {$code}", [
-            'token' => $cachedToken,
-            'expires_in' => 60
-        ]);
-
-        // $ip = $request->ip();
-        // debug testing ganti jika mau production
-        $ip = $request->ip() == '127.0.0.1' ? '36.84.69.10' : $request->ip(); // 8.8.8.8 = IP Google
-        $userAgent = $request->header('User-Agent');
-        $referer = $request->headers->get('referer');
-
-
-        // // --- Validasi token
+        // === 4️⃣ Validasi Token
         if (!$cachedToken || $cachedToken['token'] !== $request->token) {
-            View::create([
-                'link_id' => $link->id ?? null,
-                'ip_address' => $ip,
-                'user_agent' => $userAgent,
-                'referer' => $referer,
-                'is_valid' => false,
-                'earned' => 0,
-            ]);
+            $this->logView($link, $ip, $request, false, 0, 'Invalid token');
             return response()->json(['error' => 'Invalid or missing token.'], 403);
         }
 
-        // // --- Cek token expired
-        if (Carbon::parse($cachedToken['created_at'])->diffInSeconds(now()) > 120) {
+        // Pastikan token sesuai IP & UA
+        $userAgent = $request->header('User-Agent');
+        if (($cachedToken['ip'] ?? null) !== $ip || ($cachedToken['user_agent'] ?? null) !== $userAgent) {
+            $this->logView($link, $ip, $request, false, 0, 'Token mismatch');
+            return response()->json(['error' => 'Token mismatch with client.'], 403);
+        }
+
+        // === 5️⃣ Cek Token Expired
+        if (Carbon::parse($cachedToken['created_at'])->diffInSeconds(now()) > 180) {
             Cache::forget("token:{$code}");
             return response()->json(['error' => 'Token expired. Please reload the page.'], 403);
         }
 
-        // --- Ambil lokasi (opsional)
-        $position = Location::get($ip);
-        $country = $position ? $position->countryName : 'Unknown';
+        // === 6️⃣ Ambil lokasi (optional, dengan fallback)
+        try {
+            $position = Location::get($ip);
+            $country = $position->countryName ?? 'Unknown';
+        } catch (\Exception $e) {
+            Log::warning("Location lookup failed", ['ip' => $ip]);
+            $country = 'Unknown';
+        }
 
-        // --- Cek view unik per hari
+        // === 7️⃣ Cek View Unik
         $existing = View::where('link_id', $link->id ?? null)
             ->where('ip_address', $ip)
             ->whereDate('created_at', now()->toDateString())
@@ -305,48 +344,56 @@ public function index(Request $request)
 
         $isUnique = !$existing;
         $isOwnedByUser = !is_null($link->user_id ?? null);
-
-        // --- Hitung penghasilan
         $earn = ($isUnique && $isOwnedByUser) ? ($link->earn_per_click ?? 1) : 0;
+        $isSelfClick = true; // ganti false jika aktifkan commnet di bawah
 
-        // jika muncul error 500 kemungkinan chache nya bentrok dengan yang lain, jadi perlu clear di artisan
+        // // Cek jika user login & dia pemilik link
+        // if (auth()->check() && $isOwnedByUser && auth()->id() === $link->user_id) {
+        //     $isSelfClick = true;
+        // }
 
-        // --- Simpan log view
-        View::create([
-            'link_id' => $link->id ?? null,
-            'ip_address' => $ip,
-            'user_agent' => $userAgent,
-            'referer' => $referer,
-            'country' => $country,
-            'device' => $this->detectDevice($userAgent),
-            'browser' => $this->detectBrowser($userAgent),
-            'is_unique' => $isUnique,
-            'is_valid' => true,
-            'earned' => $earn,
-        ]);
+        // // Tambahan: cek jika IP klik sama dengan IP pembuat link
+        // if (!$isSelfClick && !empty($link->creator_ip) && $link->creator_ip === $ip) {
+        //     $isSelfClick = true;
+        // }
 
-        // --- Tambah saldo user (jika valid)
-        if ($isUnique && $isOwnedByUser) {
+        // === 8️⃣ Log View
+        $this->logView($link, $ip, $request, true, $earn);
+
+        // === jalanakan php artisan queue:work untuk menjalankan proses yang di simpan di anrian atau queue
+        // === 9️⃣ Update Saldo User & Pendapatan Link (asynchronous)
+        // === jika ingin lebih aman dan cepat
+        // if ($isUnique && $isOwnedByUser && $earn > 0) {
+        //     dispatch(function () use ($link, $earn) {
+        //         $user = $link->user ?? \App\Models\User::find($link->user_id);
+        //         if ($user)
+        //             $user->increment('balance', $earn);
+
+        //         $linkModel = \App\Models\Link::find($link->id);
+        //         if ($linkModel)
+        //             $linkModel->increment('total_earned', $earn);
+        //     })->afterResponse(); // tidak menghambat request utama
+        // }
+
+        // --- Tambah saldo user (hanya jika bukan self-click)
+        if ($isUnique && $isOwnedByUser && !$isSelfClick) {
             $user = isset($link->user)
                 ? $link->user
-                : \App\Models\User::find($link->user_id);
+                : User::find($link->user_id);
 
             if ($user) {
                 $user->increment('balance', $earn);
             }
 
-            // Tambahkan pendapatan ke link
             if (isset($link->id)) {
-                $linkModel = \App\Models\Link::find($link->id);
+                $linkModel = Link::find($link->id);
                 if ($linkModel) {
-                    $linkModel->increment('earn_per_click', $earn);
+                    $linkModel->increment('total_earned', $earn);
                 }
             }
         }
 
-
-
-        // --- Hapus token dari Redis setelah digunakan
+        // === 🔟 Hapus token (one-time use)
         Cache::forget("token:{$code}");
 
         return response()->json([
@@ -360,6 +407,32 @@ public function index(Request $request)
                 ? 'Valid view recorded, earnings updated.'
                 : 'Guest link viewed (no earnings).',
         ]);
+    }
+
+    // === Helper: Log View (menghindari duplikasi kode)
+    private function logView($link, $ip, $request, $isValid = false, $earned = 0, $note = null)
+    {
+        $userAgent = $request->header('User-Agent');
+        $referer = $request->headers->get('referer');
+        $country = $note ? 'Unknown' : ($request->input('country') ?? 'Unknown');
+
+        try {
+            View::create([
+                'link_id' => $link->id ?? null,
+                'ip_address' => $ip,
+                'user_agent' => $userAgent,
+                'referer' => $referer,
+                'country' => $country,
+                'device' => $this->detectDevice($userAgent),
+                'browser' => $this->detectBrowser($userAgent),
+                'is_unique' => $isValid,
+                'is_valid' => $isValid,
+                'earned' => $earned,
+                'note' => $note,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error("Failed to log view", ['error' => $e->getMessage()]);
+        }
     }
 
     // ==============================
@@ -413,7 +486,7 @@ public function index(Request $request)
 
 
     }
-// ==============================
+    // ==============================
 // PUT - Update Link
 // ==============================
     public function update(Request $request, $id)

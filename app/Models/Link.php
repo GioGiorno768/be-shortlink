@@ -20,6 +20,7 @@ class Link extends Model
         'admin_comment',
         'ad_level',
         'earn_per_click',
+        'total_earned',
         'token',
         'token_created_at',
     ];
