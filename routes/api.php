@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\PaymentMethodController;
 use App\Http\Controllers\Api\PayoutController;
 use App\Http\Controllers\Api\UserNotificationController;
 use App\Http\Controllers\Api\Admin\AdminDashboardController;
+use App\Http\Controllers\Api\SocialiteController;
 
  
 // // -------------------- AUTH --------------------
@@ -62,6 +63,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/notifications', [UserNotificationController::class, 'index']);
     Route::post('/notifications/{id}/read', [UserNotificationController::class, 'markAsRead']);
 });
+
+Route::post('/auth/google/callback', [SocialiteController::class, 'handleGoogleCallback']);
 
 
 // -------------------- SHORTLINK (Public / Hybrid) --------------------

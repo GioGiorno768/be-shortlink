@@ -27,6 +27,9 @@ class User extends Authenticatable implements MustVerifyEmail
         'referral_code',
         'referred_by',
         'balance',
+        'google_id',         // <-- TAMBAHKAN INI
+        'provider_name',     // <-- TAMBAHKAN INI
+        'email_verified_at', // <-- TAMBAHKAN INI (untuk membuat user baru)
     ];
 
     /**

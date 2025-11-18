@@ -123,4 +123,15 @@ return [
         'store' => env('APP_MAINTENANCE_STORE', 'database'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Frontend URL
+    |--------------------------------------------------------------------------
+    |
+    | URL ini digunakan untuk mengarahkan tautan reset password
+    | ke aplikasi frontend (React, Vue, dll.) Anda.
+    |
+    */
+    'frontend_url' => env('FRONTEND_URL', 'http://localhost:5173/'),
+
 ];
