@@ -1,0 +1,122 @@
+array:12 [
+  0 => array:6 [
+    "month" => "2025-01"
+    "label" => "January 2025"
+    "valid_clicks" => 0
+    "earnings" => 0
+    "average_cpm" => 0
+    "user_level" => "Basic"
+  ]
+  1 => array:6 [
+    "month" => "2025-02"
+    "label" => "February 2025"
+    "valid_clicks" => 0
+    "earnings" => 0
+    "average_cpm" => 0
+    "user_level" => "Basic"
+  ]
+  2 => array:6 [
+    "month" => "2025-03"
+    "label" => "March 2025"
+    "valid_clicks" => 0
+    "earnings" => 0
+    "average_cpm" => 0
+    "user_level" => "Basic"
+  ]
+  3 => array:6 [
+    "month" => "2025-04"
+    "label" => "April 2025"
+    "valid_clicks" => 0
+    "earnings" => 0
+    "average_cpm" => 0
+    "user_level" => "Basic"
+  ]
+  4 => array:6 [
+    "month" => "2025-05"
+    "label" => "May 2025"
+    "valid_clicks" => 0
+    "earnings" => 0
+    "average_cpm" => 0
+    "user_level" => "Basic"
+  ]
+  5 => array:6 [
+    "month" => "2025-06"
+    "label" => "June 2025"
+    "valid_clicks" => 0
+    "earnings" => 0
+    "average_cpm" => 0
+    "user_level" => "Basic"
+  ]
+  6 => array:6 [
+    "month" => "2025-07"
+    "label" => "July 2025"
+    "valid_clicks" => 0
+    "earnings" => 0
+    "average_cpm" => 0
+    "user_level" => "Basic"
+  ]
+  7 => array:6 [
+    "month" => "2025-08"
+    "label" => "August 2025"
+    "valid_clicks" => 0
+    "earnings" => 0
+    "average_cpm" => 0
+    "user_level" => "Basic"
+  ]
+  8 => array:6 [
+    "month" => "2025-09"
+    "label" => "September 2025"
+    "valid_clicks" => 0
+    "earnings" => 0
+    "average_cpm" => 0
+    "user_level" => "Basic"
+  ]
+  9 => array:6 [
+    "month" => "2025-10"
+    "label" => "October 2025"
+    "valid_clicks" => 0
+    "earnings" => 0
+    "average_cpm" => 0
+    "user_level" => "Basic"
+  ]
+  10 => array:6 [
+    "month" => "2025-11"
+    "label" => "November 2025"
+    "valid_clicks" => 0
+    "earnings" => 0
+    "average_cpm" => 0
+    "user_level" => "Basic"
+  ]
+  11 => array:6 [
+    "month" => "2025-12"
+    "label" => "December 2025"
+    "valid_clicks" => 15
+    "earnings" => 15
+    "average_cpm" => 1000
+    "user_level" => "Intermediate"
+  ]
+] // tests/Feature/MonthlyPerformanceTest.php:83
+
+   FAIL  Tests\Feature\MonthlyPerformanceTest
+  ⨯ monthly performance endpoint returns correct structure               1.89s  
+  ────────────────────────────────────────────────────────────────────────────  
+   FAILED  Tests\Feature\MonthlyPerformanceTest > monthly performance endpoi…   
+  Failed asserting that 0 matches expected 5.
+
+  at tests/Feature/MonthlyPerformanceTest.php:90
+     86▕         $pastMonthKey = Carbon::now()->subMonth()->format('Y-m');
+     87▕         $pastMonthData = collect($data)->firstWhere('month', $pastMonthKey);
+     88▕         
+     89▕         $this->assertNotNull($pastMonthData, 'Past month data not found');
+  ➜  90▕         $this->assertEquals(5, $pastMonthData['valid_clicks']);
+     91▕         $this->assertEquals(5.00, $pastMonthData['earnings']);
+     92▕         $this->assertEquals('Basic', $pastMonthData['user_level']); // Cumulative $5 < $10
+     93▕ 
+     94▕         // Find Current Month Data
+
+  1   tests/Feature/MonthlyPerformanceTest.php:90
+
+
+  Tests:    1 failed (80 assertions)
+  Duration: 1.99s
+
