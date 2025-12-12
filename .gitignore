@@ -7,7 +7,7 @@
 Thumbs.db
 
 # Environment
-.env*
+# .env*
 auth.json
 
 # IDE / Editor

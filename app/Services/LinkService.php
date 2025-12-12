@@ -138,10 +138,10 @@ class LinkService
      */
     public function calculateEarnings(Link $link, $ip, $countryCode)
     {
-        // 1. Cek View Unik (5 detik terakhir)
+        // 1. Cek View Unik (24 Jam terakhir)
         $existing = View::where('link_id', $link->id)
             ->where('ip_address', $ip)
-            ->where('created_at', '>=', now()->subSeconds(5))
+            ->where('created_at', '>=', now()->subHours(24))
             ->exists();
 
         if ($existing) {

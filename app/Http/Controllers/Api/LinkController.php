@@ -27,14 +27,12 @@ class LinkController extends Controller
     {
         $user = $request->user();
 
-        // Base Query dengan Aggregates + CPM Calculation
+        // Base Query dengan Aggregates (Optimized: Use denormalized columns)
+        // Kita assume kolom 'views', 'valid_views', 'total_earned' ada di tabel links
         $query = Link::where('user_id', $user->id)
-            ->selectRaw('links.*, (links.earn_per_click * 1000) as calculated_cpm')
-            ->withCount(['views as total_views'])
-            ->withCount(['views as valid_views' => function ($q) {
-                $q->where('is_valid', true);
-            }])
-            ->withSum('views as total_earned', 'earned');
+            ->selectRaw('links.*, links.views as total_views, (links.earn_per_click * 1000) as calculated_cpm');
+        // ->withCount removed (redundant)
+        // ->withSum removed (redundant)
 
         // 1. Search (Title, Alias/Code, Original URL)
         if ($search = $request->input('search')) {
@@ -60,11 +58,27 @@ class LinkController extends Controller
             $query->whereDate('expired_at', $expiredDate);
         }
 
+        // 3.5 Filter Ad Level
+        if ($adLevel = $request->input('ad_level')) {
+            if ($adLevel === 'noAds') {
+                $query->where('ad_level', 0);
+            } elseif (str_starts_with($adLevel, 'level')) {
+                // Extract number from "level1" -> 1
+                $level = (int) str_replace('level', '', $adLevel);
+                $query->where('ad_level', $level);
+            } elseif (is_numeric($adLevel)) {
+                $query->where('ad_level', $adLevel);
+            }
+        }
+
         // 4. Sorting / Filtering Khusus
         $filter = $request->input('filter');
         switch ($filter) {
             case 'top_links': // Terbanyak diklik (Total Views)
-                $query->orderByDesc('total_views');
+                $query->orderByDesc('views'); // Use real column
+                break;
+            case 'least_links': // Sedikit views
+                $query->orderBy('views'); // Use real column
                 break;
             case 'top_valid': // Terbanyak valid click
                 $query->orderByDesc('valid_views');
@@ -72,8 +86,10 @@ class LinkController extends Controller
             case 'top_earned': // Terbanyak penghasilan
                 $query->orderByDesc('total_earned');
                 break;
+            case 'least_earned': // Sedikit penghasilan
+                $query->orderBy('total_earned');
+                break;
             case 'avg_cpm': // Sort by Average CPM (calculated)
-                // CPM already calculated in base query, just order by it
                 $query->orderByDesc('calculated_cpm');
                 break;
             case 'link_password': // Filter links with password
@@ -82,6 +98,12 @@ class LinkController extends Controller
                 break;
             case 'expired': // Yang sudah expired
                 $query->whereNotNull('expired_at')->where('expired_at', '<', now());
+                break;
+            case 'oldest': // Terlama
+                $query->oldest();
+                break;
+            case 'newest': // Terbaru
+                $query->latest();
                 break;
             default:
                 $query->latest(); // Default: Terbaru
@@ -219,6 +241,7 @@ class LinkController extends Controller
         }
 
         return $this->successResponse([
+            'original_url' => $link->original_url,
             'short_url' => url("/{$link->code}"),
             'code' => $link->code,
             'title' => $link->title,
@@ -510,7 +533,28 @@ class LinkController extends Controller
         // === 5️⃣ Hitung Earning via Service
         $location = $linkService->getCountry($ip);
         $finalEarned = $linkService->calculateEarnings($linkModel, $ip, $location['code']);
-        $isUnique = $finalEarned > 0 || ($linkModel->user_id && !View::where('link_id', $linkModel->id)->where('ip_address', $ip)->where('created_at', '>=', now()->subSeconds(5))->exists());
+
+        // DEBUG: Check existing views
+        $existingViewCount = View::where('link_id', $linkModel->id)
+            ->where('ip_address', $ip)
+            ->where('created_at', '>=', now()->subHours(24))
+            ->count();
+
+        \Log::info('Anti-cheat check', [
+            'link_id' => $linkModel->id,
+            'ip' => $ip,
+            'existing_views_24h' => $existingViewCount,
+            'final_earned' => $finalEarned
+        ]);
+
+        // Check if this is a unique/valid view (24h cooldown)
+        $isUnique = !is_null($linkModel->user_id) && !View::where('link_id', $linkModel->id)
+            ->where('ip_address', $ip)
+            ->where('created_at', '>=', now()->subHours(24))
+            ->exists();
+
+        \Log::info('isUnique result', ['isUnique' => $isUnique, 'has_owner' => !is_null($linkModel->user_id)]);
+
         $isOwnedByUser = !is_null($linkModel->user_id);
 
         // === 6️⃣ Log View & Update Balance
@@ -625,6 +669,12 @@ class LinkController extends Controller
         // Jika user ubah level iklan, perbarui earn_per_click
         $adLevel = $validated['ad_level'] ?? $link->ad_level;
         $validated['earn_per_click'] = $earnRates[$adLevel] ?? $link->earn_per_click;
+
+        // Map 'alias' input to 'code' column
+        if (isset($validated['alias'])) {
+            $validated['code'] = $validated['alias'];
+            unset($validated['alias']);
+        }
 
         // Update semua field
         $link->update($validated);
