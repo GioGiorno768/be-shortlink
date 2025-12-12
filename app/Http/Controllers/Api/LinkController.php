@@ -530,48 +530,40 @@ class LinkController extends Controller
             return $this->errorResponse($validation['error'], $validation['status'] ?? 403, ['remaining' => $validation['remaining'] ?? 0]);
         }
 
-        // === 5️⃣ Hitung Earning via Service
+        // === 5️⃣ Hitung Earning via Service + Anti-Fraud
         $location = $linkService->getCountry($ip);
-        $finalEarned = $linkService->calculateEarnings($linkModel, $ip, $location['code']);
 
-        // DEBUG: Check existing views
-        $existingViewCount = View::where('link_id', $linkModel->id)
-            ->where('ip_address', $ip)
-            ->where('created_at', '>=', now()->subHours(24))
-            ->count();
+        // 🛡️ Get visitor_id (device fingerprint) from request
+        $visitorId = $request->input('visitor_id');
 
-        \Log::info('Anti-cheat check', [
-            'link_id' => $linkModel->id,
-            'ip' => $ip,
-            'existing_views_24h' => $existingViewCount,
-            'final_earned' => $finalEarned
-        ]);
+        // Calculate earnings with anti-fraud protection
+        $earningResult = $linkService->calculateEarnings($linkModel, $ip, $location['code'], $visitorId);
 
-        // Check if this is a unique/valid view (24h cooldown)
-        $isUnique = !is_null($linkModel->user_id) && !View::where('link_id', $linkModel->id)
-            ->where('ip_address', $ip)
-            ->where('created_at', '>=', now()->subHours(24))
-            ->exists();
+        $finalEarned = $earningResult['earning'];
+        $isValidView = $earningResult['is_valid'];
+        $rejectionReason = $earningResult['rejection_reason'];
 
-        \Log::info('isUnique result', ['isUnique' => $isUnique, 'has_owner' => !is_null($linkModel->user_id)]);
-
+        // isUnique is true only if it's a valid earning view
+        $isUnique = $isValidView && $finalEarned > 0;
         $isOwnedByUser = !is_null($linkModel->user_id);
 
-        // === 6️⃣ Log View & Update Balance
-        // === 6️⃣ Log View & Update Balance
-        DB::transaction(function () use ($linkModel, $ip, $request, $finalEarned, $isUnique, $isOwnedByUser, $location, $userAgent) {
-            // 1. Create View Record
+        // === 6️⃣ Log View & Update Balance (with Shadow Banning)
+        DB::transaction(function () use ($linkModel, $ip, $request, $finalEarned, $isUnique, $isValidView, $rejectionReason, $isOwnedByUser, $location, $userAgent, $visitorId) {
+            // 1. Create View Record (ALWAYS CREATE, even if invalid - Shadow Banning)
             View::create([
                 'link_id' => $linkModel->id,
                 'ip_address' => $ip,
+                'visitor_id' => $visitorId, // 🛡️ Device Fingerprint
                 'user_agent' => $userAgent,
                 'referer' => $request->headers->get('referer'),
                 'country' => $location['name'],
                 'device' => $this->detectDevice($userAgent),
                 'browser' => $this->detectBrowser($userAgent),
                 'is_unique' => $isUnique,
-                'is_valid' => true, // Token valid = view valid
+                'is_valid' => $isValidView, // 🛡️ False if fraud detected
+                'rejection_reason' => $rejectionReason, // 🛡️ Why it was rejected
                 'earned' => $finalEarned,
+                'publisher_earning' => $isValidView ? $finalEarned : 0, // 🛡️ Actual earning to publisher
             ]);
 
             // 2. Update Link Stats

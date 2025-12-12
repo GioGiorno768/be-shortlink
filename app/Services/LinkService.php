@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Models\View;
 use App\Models\AdRate;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Str;
 use Stevebauman\Location\Facades\Location;
@@ -134,26 +135,102 @@ class LinkService
     }
 
     /**
-     * Calculate earnings for a view.
+     * 🛡️ Calculate earnings for a view with Anti-Fraud Protection
+     * 
+     * @param Link $link
+     * @param string $ip
+     * @param string $countryCode
+     * @param string|null $visitorId Device fingerprint from FingerprintJS
+     * @return array ['earning' => float, 'is_valid' => bool, 'rejection_reason' => string|null]
      */
-    public function calculateEarnings(Link $link, $ip, $countryCode)
+    public function calculateEarnings(Link $link, $ip, $countryCode, $visitorId = null)
     {
-        // 1. Cek View Unik (24 Jam terakhir)
-        $existing = View::where('link_id', $link->id)
-            ->where('ip_address', $ip)
-            ->where('created_at', '>=', now()->subHours(24))
-            ->exists();
+        // Load owner untuk cek self-click
+        $owner = $link->user;
 
-        if ($existing) {
-            return 0; // Tidak unik / spam
+        // ============================================================
+        // 🛡️ LAYER 1: SELF-CLICK DETECTION
+        // ============================================================
+        if ($visitorId && $owner && $owner->last_device_fingerprint === $visitorId) {
+            return [
+                'earning' => 0,
+                'is_valid' => false,
+                'rejection_reason' => 'Self Click'
+            ];
         }
 
-        // 2. Cek Pemilik Link
-        if (!$link->user_id) {
-            return 0; // Guest link tidak dapat earning
+        // ============================================================
+        // 🛡️ LAYER 2: DAILY LIMIT (Max 5 views per visitor per owner)
+        // ============================================================
+        if ($visitorId && $owner) {
+            $cacheKey = "daily_limit:{$visitorId}:owner:{$owner->id}";
+            $dailyCount = Redis::get($cacheKey);
+
+            if ($dailyCount === null) {
+                // Hitung dari DB jika tidak ada di cache
+                $dailyCount = View::where('visitor_id', $visitorId)
+                    ->whereHas('link', function ($q) use ($owner) {
+                        $q->where('user_id', $owner->id);
+                    })
+                    ->where('created_at', '>=', now()->subHours(24))
+                    ->where('is_valid', true)
+                    ->count();
+
+                // Set ke Redis dengan TTL 24 jam
+                Redis::setex($cacheKey, 86400, $dailyCount);
+            }
+
+            if ($dailyCount >= 5) {
+                return [
+                    'earning' => 0,
+                    'is_valid' => false,
+                    'rejection_reason' => 'Daily Limit'
+                ];
+            }
         }
 
-        // 3. Ambil Rate
+        // ============================================================
+        // 🛡️ LAYER 3: DUPLICATE LINK (24h Cooldown per link)
+        // ============================================================
+        if ($visitorId) {
+            $cacheKey = "link_cooldown:{$visitorId}:link:{$link->id}";
+            $recentView = Redis::get($cacheKey);
+
+            if ($recentView === null) {
+                // Cek DB
+                $recentView = View::where('visitor_id', $visitorId)
+                    ->where('link_id', $link->id)
+                    ->where('created_at', '>=', now()->subHours(24))
+                    ->exists();
+
+                if ($recentView) {
+                    Redis::setex($cacheKey, 86400, '1');
+                }
+            }
+
+            if ($recentView) {
+                return [
+                    'earning' => 0,
+                    'is_valid' => false,
+                    'rejection_reason' => 'Duplicate Link'
+                ];
+            }
+        }
+
+        // ============================================================
+        // ✅ VALID VIEW - Calculate Earnings
+        // ============================================================
+
+        // 1. Guest link tidak dapat earning
+        if (!$owner) {
+            return [
+                'earning' => 0,
+                'is_valid' => true,
+                'rejection_reason' => null
+            ];
+        }
+
+        // 2. Ambil Rate
         $adRates = Cache::remember('ad_rates_all', 3600, function () {
             return AdRate::all();
         });
@@ -178,20 +255,29 @@ class LinkService
         $rates = $rateConfig->rates ?? [];
         $baseEarn = $rates[$levelKey] ?? ($rates['level_1'] ?? 0.00);
 
-        // 4. Hitung Bonus Level User
+        // 3. Hitung Bonus Level User
         $finalEarned = $baseEarn;
-
-        // Load user dengan cache level
-        $owner = $link->user;
-        if ($owner) {
-            $bonusPercentage = $owner->bonus_cpm_percentage; // Menggunakan accessor dari User model
-            if ($bonusPercentage > 0) {
-                $bonusAmount = $baseEarn * ($bonusPercentage / 100);
-                $finalEarned += $bonusAmount;
-            }
+        $bonusPercentage = $owner->bonus_cpm_percentage;
+        if ($bonusPercentage > 0) {
+            $bonusAmount = $baseEarn * ($bonusPercentage / 100);
+            $finalEarned += $bonusAmount;
         }
 
-        return $finalEarned;
+        // Update Redis cache untuk layer 2 & 3
+        if ($visitorId && $owner) {
+            $cacheKey = "daily_limit:{$visitorId}:owner:{$owner->id}";
+            Redis::incr($cacheKey);
+            Redis::expire($cacheKey, 86400);
+
+            $linkCacheKey = "link_cooldown:{$visitorId}:link:{$link->id}";
+            Redis::setex($linkCacheKey, 86400, '1');
+        }
+
+        return [
+            'earning' => $finalEarned,
+            'is_valid' => true,
+            'rejection_reason' => null
+        ];
     }
 
     /**
