@@ -567,7 +567,11 @@ class LinkController extends Controller
             ]);
 
             // 2. Update Link Stats
-            $linkModel->increment('views');
+            // 🛡️ Only increment views if valid (User Request: Stop incrementing invalid views)
+            if ($isValidView) {
+                $linkModel->increment('views');
+            }
+
             if ($isUnique) {
                 $linkModel->increment('valid_views');
                 $linkModel->increment('total_earned', $finalEarned);

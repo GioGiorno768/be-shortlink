@@ -160,31 +160,44 @@ class LinkService
         }
 
         // ============================================================
-        // 🛡️ LAYER 2: DAILY LIMIT (Max 5 views per visitor per owner)
+        // 🛡️ LAYER 2: STRICT GLOBAL OWNER LIMIT (1 valid view per 5h per owner)
         // ============================================================
-        if ($visitorId && $owner) {
-            $cacheKey = "daily_limit:{$visitorId}:owner:{$owner->id}";
-            $dailyCount = Redis::get($cacheKey);
+        if ($owner) {
+            // Identifier: Prefer visitorId, fallback to IP
+            $identifier = $visitorId ?? $ip;
 
-            if ($dailyCount === null) {
-                // Hitung dari DB jika tidak ada di cache
-                $dailyCount = View::where('visitor_id', $visitorId)
+            $cacheKey = "global_limit:{$identifier}:owner:{$owner->id}";
+            $hasEarnedRecently = Redis::get($cacheKey);
+
+            if ($hasEarnedRecently === null) {
+                // Cek DB: "Apakah ada earning dari (VisitorID INI *ATAU* IP INI) untuk Owner INI dalam 5 jam terakhir?"
+                $hasEarnedRecently = View::where(function ($query) use ($visitorId, $ip) {
+                    $query->where('ip_address', $ip); // Cek IP
+                    if ($visitorId) {
+                        $query->orWhere('visitor_id', $visitorId); // ATAU Cek Visitor ID
+                    }
+                })
                     ->whereHas('link', function ($q) use ($owner) {
                         $q->where('user_id', $owner->id);
                     })
-                    ->where('created_at', '>=', now()->subHours(24))
+                    ->where('created_at', '>=', now()->subHours(5))
                     ->where('is_valid', true)
-                    ->count();
+                    ->exists();
 
-                // Set ke Redis dengan TTL 24 jam
-                Redis::setex($cacheKey, 86400, $dailyCount);
+                // Cache result (1 = blocked, 0 = allowed)
+                // If exists (true) -> set cache '1' -> Blocked
+                // If not exists (false) -> set cache '0' -> Allowed (but will be set to '1' after this view created)
+                if ($hasEarnedRecently) {
+                    Redis::setex($cacheKey, 5 * 3600, '1'); // 5 Hours TTL
+                }
             }
 
-            if ($dailyCount >= 5) {
+            // Jika Redis return '1' (string) atau true boolean logic
+            if ($hasEarnedRecently && $hasEarnedRecently !== '0') {
                 return [
                     'earning' => 0,
                     'is_valid' => false,
-                    'rejection_reason' => 'Daily Limit'
+                    'rejection_reason' => 'Global Limit (5h)'
                 ];
             }
         }

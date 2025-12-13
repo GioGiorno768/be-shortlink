@@ -39,6 +39,7 @@ class AuthenticatedSessionController extends Controller
 
         // $request->session()->regenerate();
 
+        /** @var \App\Models\User $user */
         $user = Auth::user();
 
         // 🔥🔥 CEK STATUS BANNED 🔥🔥
@@ -61,6 +62,12 @@ class AuthenticatedSessionController extends Controller
 
         // 📝 Catat Login History
         LoginLogger::record($user);
+
+        // 🛡️ Save Device Fingerprint for Self-Click Detection
+        $visitorId = $request->input('visitor_id');
+        if ($visitorId) {
+            $user->update(['last_device_fingerprint' => $visitorId]);
+        }
 
         return response()->json([
             // 'user' => $user,
