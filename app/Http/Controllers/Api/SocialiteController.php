@@ -23,7 +23,7 @@ class SocialiteController extends Controller
             'access_token' => 'required|string',
         ]);
 
-         try {
+        try {
             // 1. Dapatkan info user dari Google menggunakan 'access_token'
             //    Gunakan stateless() karena ini API
             //    REVISI: Menggunakan userFromToken() alih-alih userFromCode()
@@ -74,12 +74,50 @@ class SocialiteController extends Controller
             // 📝 Catat Login History
             LoginLogger::record($user);
 
+            // 🛡️ Save Device Fingerprint & IP for Self-Click Detection
+            $visitorId = $request->input('visitor_id');
+
+            $loginIp = $request->ip();
+            if (app()->environment('local') && $loginIp === '127.0.0.1') {
+                $loginIp = '36.84.69.10';
+            }
+
+            Log::info('📝 GOOGLE LOGIN - Received Data', [
+                'user_id' => $user->id,
+                'user_email' => $user->email,
+                'visitor_id_received' => $visitorId,
+                'login_ip' => $loginIp,
+            ]);
+
+            $updateData = [];
+            if ($visitorId) {
+                $updateData['last_device_fingerprint'] = $visitorId;
+            }
+            if ($loginIp) {
+                $updateData['last_login_ip'] = $loginIp;
+            }
+
+            if (!empty($updateData)) {
+                Log::info('💾 GOOGLE LOGIN - Updating User', [
+                    'user_id' => $user->id,
+                    'update_data' => $updateData
+                ]);
+
+                $user->update($updateData);
+
+                $user->refresh();
+                Log::info('✅ GOOGLE LOGIN - Update Complete', [
+                    'user_id' => $user->id,
+                    'last_device_fingerprint' => $user->last_device_fingerprint,
+                    'last_login_ip' => $user->last_login_ip
+                ]);
+            }
+
             // 4. Kembalikan respons JSON yang sama seperti login/register biasa
             return $this->successResponse([
                 'user' => $user,
                 'token' => $token,
             ], 'Login with Google successful');
-
         } catch (Exception $e) {
             // Tangani jika 'access_token' tidak valid atau ada error
             Log::error('Google Login Error: ' . $e->getMessage());

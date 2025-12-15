@@ -548,23 +548,40 @@ class LinkController extends Controller
         $isOwnedByUser = !is_null($linkModel->user_id);
 
         // === 6️⃣ Log View & Update Balance (with Shadow Banning)
-        DB::transaction(function () use ($linkModel, $ip, $request, $finalEarned, $isUnique, $isValidView, $rejectionReason, $isOwnedByUser, $location, $userAgent, $visitorId) {
-            // 1. Create View Record (ALWAYS CREATE, even if invalid - Shadow Banning)
-            View::create([
-                'link_id' => $linkModel->id,
-                'ip_address' => $ip,
-                'visitor_id' => $visitorId, // 🛡️ Device Fingerprint
-                'user_agent' => $userAgent,
-                'referer' => $request->headers->get('referer'),
-                'country' => $location['name'],
-                'device' => $this->detectDevice($userAgent),
-                'browser' => $this->detectBrowser($userAgent),
-                'is_unique' => $isUnique,
-                'is_valid' => $isValidView, // 🛡️ False if fraud detected
-                'rejection_reason' => $rejectionReason, // 🛡️ Why it was rejected
-                'earned' => $finalEarned,
-                'publisher_earning' => $isValidView ? $finalEarned : 0, // 🛡️ Actual earning to publisher
-            ]);
+
+        // 🚀 FULL REDIS MODE: Set to true for startup (lighter storage)
+        // Set to false when platform grows and you need detailed analytics
+        $FULL_REDIS_MODE = true;
+
+        DB::transaction(function () use ($linkModel, $ip, $request, $finalEarned, $isUnique, $isValidView, $rejectionReason, $isOwnedByUser, $location, $userAgent, $visitorId, $FULL_REDIS_MODE) {
+
+            // ================================================================
+            // 📊 VIEW RECORDING (Only in Hybrid Mode, skipped in Full Redis)
+            // ================================================================
+            // Uncomment/enable this when platform grows and you need:
+            // - Detailed analytics (device, browser, referer per view)
+            // - Fraud audit logs
+            // - Historical view data
+            // ================================================================
+            if (!$FULL_REDIS_MODE) {
+                // 1. Create View Record (ALWAYS CREATE, even if invalid - Shadow Banning)
+                View::create([
+                    'link_id' => $linkModel->id,
+                    'ip_address' => $ip,
+                    'visitor_id' => $visitorId, // 🛡️ Device Fingerprint
+                    'user_agent' => $userAgent,
+                    'referer' => $request->headers->get('referer'),
+                    'country' => $location['name'],
+                    'device' => $this->detectDevice($userAgent),
+                    'browser' => $this->detectBrowser($userAgent),
+                    'is_unique' => $isUnique,
+                    'is_valid' => $isValidView, // 🛡️ False if fraud detected
+                    'rejection_reason' => $rejectionReason, // 🛡️ Why it was rejected
+                    'earned' => $finalEarned,
+                    'publisher_earning' => $isValidView ? $finalEarned : 0, // 🛡️ Actual earning to publisher
+                ]);
+            }
+            // ================================================================
 
             // 2. Update Link Stats
             // 🛡️ Only increment views if valid (User Request: Stop incrementing invalid views)

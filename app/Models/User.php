@@ -40,6 +40,8 @@ class User extends Authenticatable implements MustVerifyEmail
         'is_banned',
         'total_earnings',
         'last_active_at', // <-- TAMBAHKAN INI
+        'last_device_fingerprint', // Anti-fraud
+        'last_login_ip',           // Anti-fraud
     ];
 
     /**
@@ -119,7 +121,7 @@ class User extends Authenticatable implements MustVerifyEmail
         if ($this->relationLoaded('currentLevel')) {
             return $this->getRelation('currentLevel');
         }
-        
+
         if ($this->current_level_id) {
             return $this->currentLevel()->first();
         }
@@ -128,13 +130,13 @@ class User extends Authenticatable implements MustVerifyEmail
         $levels = \Illuminate\Support\Facades\Cache::remember('all_levels', 3600, function () {
             return Level::orderBy('min_total_earnings', 'desc')->get();
         });
-        
+
         $level = $levels->firstWhere('min_total_earnings', '<=', $this->total_earnings);
-            
+
         if ($level && $level->id !== $this->current_level_id) {
             $this->forceFill(['current_level_id' => $level->id])->saveQuietly();
         }
-        
+
         return $level;
     }
 

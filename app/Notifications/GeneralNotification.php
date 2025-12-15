@@ -14,17 +14,19 @@ class GeneralNotification extends Notification // implements ShouldQueue
     public $title;
     public $message;
     public $type; // 'info', 'success', 'warning', 'danger'
+    public $category; // 'system', 'payment', 'link', 'account', 'event'
     public $actionUrl;
     public $expiresAt;
 
     /**
      * Create a new notification instance.
      */
-    public function __construct($title, $message, $type = 'info', $actionUrl = null, $expiresAt = null)
+    public function __construct($title, $message, $type = 'info', $category = 'system', $actionUrl = null, $expiresAt = null)
     {
         $this->title = $title;
         $this->message = $message;
         $this->type = $type;
+        $this->category = $category;
         $this->actionUrl = $actionUrl;
         $this->expiresAt = $expiresAt;
     }
@@ -47,8 +49,10 @@ class GeneralNotification extends Notification // implements ShouldQueue
             'title' => $this->title,
             'message' => $this->message,
             'type' => $this->type,
+            'category' => $this->category,
             'action_url' => $this->actionUrl,
-            'icon' => $this->getIconByType($this->type), // Helper icon frontend
+            'url' => $this->actionUrl, // Alias for frontend compatibility
+            'icon' => $this->getIconByType($this->type),
             'expires_at' => $this->expiresAt,
         ];
     }

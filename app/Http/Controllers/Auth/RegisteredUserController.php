@@ -32,7 +32,7 @@ class RegisteredUserController extends Controller
         // 1. Validasi Input
         $request->validate([
             'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'string', 'email', 'max:255', 'unique:'.User::class],
+            'email' => ['required', 'string', 'email', 'max:255', 'unique:' . User::class],
             'password' => ['required', 'confirmed', Rules\Password::defaults()],
             // Validasi kode referral: harus ada di tabel users kolom referral_code
             'referral_code' => ['nullable', 'string', 'exists:users,referral_code'],
@@ -40,7 +40,7 @@ class RegisteredUserController extends Controller
 
         // 2. Eksekusi dalam Transaksi Database
         $user = DB::transaction(function () use ($request) {
-            
+
             // Cari ID Pengundang (Referrer)
             // Cari ID Pengundang (Referrer)
             $referrerId = null;
@@ -58,9 +58,9 @@ class RegisteredUserController extends Controller
                 'name' => $request->name,
                 'email' => $request->email,
                 'password' => Hash::make($request->password),
-                'referral_code' => User::generateReferralCode(), 
+                'referral_code' => User::generateReferralCode(),
                 'referred_by' => $referrerId, // Simpan relasi
-                'balance' => 0, 
+                'balance' => 0,
                 'pending_balance' => 0,
             ]);
         });
@@ -68,6 +68,26 @@ class RegisteredUserController extends Controller
         event(new Registered($user));
 
         $token = $user->createToken('api_token')->plainTextToken;
+
+        // 🛡️ Anti-Fraud: Store Fingerprint & IP
+        $visitorId = $request->input('visitor_id');
+
+        $loginIp = $request->ip();
+        if (app()->environment('local') && $loginIp === '127.0.0.1') {
+            $loginIp = '36.84.69.10';
+        }
+
+        $updateData = [];
+        if ($visitorId) {
+            $updateData['last_device_fingerprint'] = $visitorId;
+        }
+        if ($loginIp) {
+            $updateData['last_login_ip'] = $loginIp;
+        }
+
+        if (!empty($updateData)) {
+            $user->update($updateData);
+        }
 
         return response([
             'message' => 'Registered successfully.',

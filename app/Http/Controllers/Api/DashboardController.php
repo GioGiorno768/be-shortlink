@@ -32,7 +32,11 @@ class DashboardController extends Controller
 
         $balance = $user->balance ?? 0;
         $payout = Payout::where('user_id', $user->id)->where('status', 'paid')->sum('amount');
-        $avgCpc = Link::where('user_id', $user->id)->avg('earn_per_click') ?? 0;
+
+        // Calculate Average CPM: (total_earnings / total_views) * 1000
+        $totalViews = $user->total_views ?? 0;
+        $totalEarnings = $user->total_earnings ?? 0;
+        $avgCpm = $totalViews > 0 ? round(($totalEarnings / $totalViews) * 1000, 2) : 0;
 
         // ====================================
         // 🔹 TOP LINKS SECTION (Top 10 by Valid Clicks)
@@ -97,8 +101,8 @@ class DashboardController extends Controller
             'summary' => [
                 'balance' => (float) $balance,
                 'payout' => (float) $payout,
-                'cpc' => (float) $avgCpc,
-                'total_earnings' => (float) ($user->total_earnings ?? 0), // Added total earnings
+                'cpm' => (float) $avgCpm,
+                'total_earnings' => (float) ($user->total_earnings ?? 0),
             ],
             'top_links' => $topLinks,
             'referral' => $referralData,
@@ -163,8 +167,4 @@ class DashboardController extends Controller
 
         return $this->successResponse($data, 'Trends data retrieved');
     }
-
-
 }
-
-

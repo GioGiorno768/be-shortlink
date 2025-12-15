@@ -9,6 +9,7 @@ use App\Models\AdRate;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Stevebauman\Location\Facades\Location;
 use Carbon\Carbon;
@@ -149,86 +150,109 @@ class LinkService
         $owner = $link->user;
 
         // ============================================================
-        // 🛡️ LAYER 1: SELF-CLICK DETECTION
+        // 🛡️ LAYER 1: SELF-CLICK DETECTION (DB Reference)
         // ============================================================
-        if ($visitorId && $owner && $owner->last_device_fingerprint === $visitorId) {
+        if ($owner) {
+            Log::info('🔍 LAYER 1 - Self-Click Check', [
+                'link_id' => $link->id,
+                'owner_id' => $owner->id,
+                'visitor_ip' => $ip,
+                'visitor_fingerprint' => $visitorId,
+                'owner_last_login_ip' => $owner->last_login_ip,
+                'owner_last_fingerprint' => $owner->last_device_fingerprint,
+                'ip_match' => ($owner->last_login_ip && $owner->last_login_ip === $ip),
+                'fp_match' => ($visitorId && $owner->last_device_fingerprint && $owner->last_device_fingerprint === $visitorId),
+            ]);
+
+            // Cek IP Login Terakhir Owner
+            if ($owner->last_login_ip && $owner->last_login_ip === $ip) {
+                Log::warning('❌ SELF-CLICK DETECTED - IP Match', [
+                    'visitor_ip' => $ip,
+                    'owner_ip' => $owner->last_login_ip
+                ]);
+                return [
+                    'earning' => 0,
+                    'is_valid' => false,
+                    'rejection_reason' => 'Self Click (IP Match)',
+                    'shadow_ban' => true
+                ];
+            }
+
+            // Cek Fingerprint Login Terakhir Owner
+            if ($visitorId && $owner->last_device_fingerprint && $owner->last_device_fingerprint === $visitorId) {
+                Log::warning('❌ SELF-CLICK DETECTED - Fingerprint Match', [
+                    'visitor_fp' => $visitorId,
+                    'owner_fp' => $owner->last_device_fingerprint
+                ]);
+                return [
+                    'earning' => 0,
+                    'is_valid' => false,
+                    'rejection_reason' => 'Self Click (Fingerprint Match)',
+                    'shadow_ban' => true
+                ];
+            }
+
+            Log::info('✅ LAYER 1 PASSED - Not a self-click');
+        }
+
+        // ============================================================
+        // 💰 CALCULATE EARNING (Valid View)
+        // ============================================================
+
+        // ============================================================
+        // 🛡️ LAYER 2: PER-LINK COOLDOWN 24H (Redis + DB Fallback)
+        // Cek apakah IP atau Fingerprint sudah pernah klik link INI dalam 24 jam
+        // ============================================================
+
+        // Identifier: prioritas Fingerprint, fallback ke IP
+        $identifier = $visitorId ?? $ip;
+        $cacheKey = "link_cooldown:{$link->id}:{$identifier}";
+
+        Log::info('🔍 LAYER 2 - Per-Link Cooldown Check', [
+            'link_id' => $link->id,
+            'identifier' => $identifier,
+            'cache_key' => $cacheKey,
+        ]);
+
+        $recentView = Redis::get($cacheKey);
+
+        if ($recentView === null) {
+            // Cek DB: apakah ada view dari (Fingerprint ATAU IP) untuk link INI dalam 24 jam?
+            $recentView = View::where('link_id', $link->id)
+                ->where(function ($query) use ($visitorId, $ip) {
+                    $query->where('ip_address', $ip);
+                    if ($visitorId) {
+                        $query->orWhere('visitor_id', $visitorId);
+                    }
+                })
+                ->where('created_at', '>=', now()->subHours(24))
+                ->exists();
+
+            if ($recentView) {
+                Redis::setex($cacheKey, 86400, '1'); // Cache 24h
+            }
+        }
+
+        if ($recentView && $recentView !== '0') {
+            Log::warning('❌ BLOCKED - Per-Link Cooldown (24h)', [
+                'link_id' => $link->id,
+                'identifier' => $identifier
+            ]);
             return [
                 'earning' => 0,
                 'is_valid' => false,
-                'rejection_reason' => 'Self Click'
+                'rejection_reason' => 'Duplicate Link (24h Cooldown)',
+                'shadow_ban' => true
             ];
         }
 
-        // ============================================================
-        // 🛡️ LAYER 2: STRICT GLOBAL OWNER LIMIT (1 valid view per 5h per owner)
-        // ============================================================
-        if ($owner) {
-            // Identifier: Prefer visitorId, fallback to IP
-            $identifier = $visitorId ?? $ip;
+        // Jika lolos, SET cache untuk identifier ini
+        Redis::setex($cacheKey, 86400, '1');
 
-            $cacheKey = "global_limit:{$identifier}:owner:{$owner->id}";
-            $hasEarnedRecently = Redis::get($cacheKey);
-
-            if ($hasEarnedRecently === null) {
-                // Cek DB: "Apakah ada earning dari (VisitorID INI *ATAU* IP INI) untuk Owner INI dalam 5 jam terakhir?"
-                $hasEarnedRecently = View::where(function ($query) use ($visitorId, $ip) {
-                    $query->where('ip_address', $ip); // Cek IP
-                    if ($visitorId) {
-                        $query->orWhere('visitor_id', $visitorId); // ATAU Cek Visitor ID
-                    }
-                })
-                    ->whereHas('link', function ($q) use ($owner) {
-                        $q->where('user_id', $owner->id);
-                    })
-                    ->where('created_at', '>=', now()->subHours(5))
-                    ->where('is_valid', true)
-                    ->exists();
-
-                // Cache result (1 = blocked, 0 = allowed)
-                // If exists (true) -> set cache '1' -> Blocked
-                // If not exists (false) -> set cache '0' -> Allowed (but will be set to '1' after this view created)
-                if ($hasEarnedRecently) {
-                    Redis::setex($cacheKey, 5 * 3600, '1'); // 5 Hours TTL
-                }
-            }
-
-            // Jika Redis return '1' (string) atau true boolean logic
-            if ($hasEarnedRecently && $hasEarnedRecently !== '0') {
-                return [
-                    'earning' => 0,
-                    'is_valid' => false,
-                    'rejection_reason' => 'Global Limit (5h)'
-                ];
-            }
-        }
-
-        // ============================================================
-        // 🛡️ LAYER 3: DUPLICATE LINK (24h Cooldown per link)
-        // ============================================================
-        if ($visitorId) {
-            $cacheKey = "link_cooldown:{$visitorId}:link:{$link->id}";
-            $recentView = Redis::get($cacheKey);
-
-            if ($recentView === null) {
-                // Cek DB
-                $recentView = View::where('visitor_id', $visitorId)
-                    ->where('link_id', $link->id)
-                    ->where('created_at', '>=', now()->subHours(24))
-                    ->exists();
-
-                if ($recentView) {
-                    Redis::setex($cacheKey, 86400, '1');
-                }
-            }
-
-            if ($recentView) {
-                return [
-                    'earning' => 0,
-                    'is_valid' => false,
-                    'rejection_reason' => 'Duplicate Link'
-                ];
-            }
-        }
+        Log::info('✅ LAYER 2 PASSED - Setting per-link cooldown', [
+            'link_id' => $link->id,
+            'cache_key' => $cacheKey
+        ]);
 
         // ============================================================
         // ✅ VALID VIEW - Calculate Earnings

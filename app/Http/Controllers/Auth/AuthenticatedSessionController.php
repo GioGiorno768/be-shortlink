@@ -65,8 +65,45 @@ class AuthenticatedSessionController extends Controller
 
         // 🛡️ Save Device Fingerprint for Self-Click Detection
         $visitorId = $request->input('visitor_id');
+
+        $loginIp = $request->ip();
+        if (app()->environment('local') && $loginIp === '127.0.0.1') {
+            $loginIp = '36.84.69.10';
+        }
+
+        \Log::info('📝 LOGIN - Received Data', [
+            'user_id' => $user->id,
+            'user_email' => $user->email,
+            'visitor_id_received' => $visitorId,
+            'login_ip' => $loginIp,
+            'all_request_data' => $request->all()
+        ]);
+
+        $updateData = [];
         if ($visitorId) {
-            $user->update(['last_device_fingerprint' => $visitorId]);
+            $updateData['last_device_fingerprint'] = $visitorId;
+        }
+        if ($loginIp) {
+            $updateData['last_login_ip'] = $loginIp;
+        }
+
+        if (!empty($updateData)) {
+            \Log::info('💾 LOGIN - Updating User', [
+                'user_id' => $user->id,
+                'update_data' => $updateData
+            ]);
+
+            $user->update($updateData);
+
+            // Verify update
+            $user->refresh();
+            \Log::info('✅ LOGIN - Update Complete', [
+                'user_id' => $user->id,
+                'last_device_fingerprint' => $user->last_device_fingerprint,
+                'last_login_ip' => $user->last_login_ip
+            ]);
+        } else {
+            \Log::warning('⚠️ LOGIN - No data to update (visitor_id or IP missing)');
         }
 
         return response()->json([
