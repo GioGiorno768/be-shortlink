@@ -47,6 +47,6 @@ return [
 
     'max_age' => 0,
 
-    'supports_credentials' => false, // ✅ False untuk pure token-based
+    'supports_credentials' => true, // ✅ True untuk cookie/credentials support
 
 ];

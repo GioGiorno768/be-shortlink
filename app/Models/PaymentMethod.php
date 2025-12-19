@@ -17,6 +17,7 @@ class PaymentMethod extends Model
         'bank_name',
         'fee',
         'is_verified',
+        'is_default',
         // 'verification_token'
     ];
 
@@ -29,6 +30,4 @@ class PaymentMethod extends Model
     {
         return $this->hasMany(Payout::class);
     }
-
-
 }

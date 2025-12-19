@@ -48,7 +48,7 @@ class RegisteredUserController extends Controller
                 $referrer = User::where('referral_code', $request->referral_code)->lockForUpdate()->first();
                 if ($referrer) {
                     $referrerId = $referrer->id;
-                    $referrer->increment('total_referrals'); // 🔥 Increment Total Referrals
+                    // Note: total_referrals count is computed dynamically in ReferralController
                 }
             }
 

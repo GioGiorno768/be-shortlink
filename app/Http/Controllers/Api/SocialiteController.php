@@ -50,6 +50,15 @@ class SocialiteController extends Controller
                         return $this->errorResponse($setting->value['message'] ?? 'Registration is currently closed.', 403, ['error' => 'Registration Closed']);
                     }
 
+                    // 🎁 Handle Referral Code
+                    $referrerId = null;
+                    if ($request->referral_code) {
+                        $referrer = User::where('referral_code', $request->referral_code)->first();
+                        if ($referrer) {
+                            $referrerId = $referrer->id;
+                        }
+                    }
+
                     // Ini adalah user baru, buat akun baru
                     $user = User::create([
                         'name' => $googleUser->getName(),
@@ -58,7 +67,8 @@ class SocialiteController extends Controller
                         'provider_name' => 'google',
                         'email_verified_at' => now(), // Email dari Google sudah terverifikasi
                         'password' => null, // Tidak ada password (karena sudah nullable di migrasi Anda)
-                        'referral_code' => User::generateReferralCode(), // Panggil fungsi dari User model Anda
+                        'referral_code' => User::generateReferralCode(),
+                        'referred_by' => $referrerId, // 🎁 Link to referrer
                     ]);
                 }
             }

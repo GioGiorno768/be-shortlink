@@ -25,6 +25,8 @@ class Link extends Model
         'total_earned',
         'token',
         'token_created_at',
+        'views',
+        'next_confirm_at',
     ];
 
     protected $casts = [

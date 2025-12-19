@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Link;
 use App\Models\View;
 use App\Models\Payout;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Carbon\Carbon;
@@ -53,6 +54,7 @@ class DashboardController extends Controller
 
                 return [
                     'id' => $link->id,
+                    'title' => $link->title, // Include title (nullable)
                     'short_url' => url("/links/{$link->code}"),
                     'original_url' => $link->original_url,
                     'created_at' => $link->created_at->format('d M Y, h:i A'),
@@ -73,7 +75,7 @@ class DashboardController extends Controller
 
         $referralData = [
             'code' => $user->referral_code,
-            'users' => $user->total_referrals ?? 0, // 🔥 Optimized
+            'users' => User::where('referred_by', $user->id)->count(), // Count directly from DB
             'referral_links' => [
                 [
                     'platform' => 'whatsapp',

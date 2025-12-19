@@ -66,7 +66,7 @@ class User extends Authenticatable implements MustVerifyEmail
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
-            'balance' => 'integer',
+            'balance' => 'decimal:2',
             'is_banned' => 'boolean',
             'total_earnings' => 'decimal:4',
             'last_active_at' => 'datetime',

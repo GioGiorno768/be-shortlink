@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Hash;
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\Auth\EmailVerificationNotificationController;
 use App\Http\Controllers\Auth\NewPasswordController;
@@ -32,6 +33,8 @@ use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\ProfileController;
 use App\Http\Controllers\Api\LoginHistoryController;
 use App\Http\Controllers\Api\UserLevelController;
+use App\Http\Controllers\Api\AdLevelController;
+use App\Http\Controllers\Api\Admin\AdminAdLevelController;
 
 
 
@@ -74,10 +77,18 @@ Route::middleware('throttle:10,1')->post('/links', [LinkController::class, 'stor
 Route::middleware(['auth:sanctum', 'throttle:10,1'])->post('/links/mass', [LinkController::class, 'massStore']); // user only
 Route::get('/links/{code}', [LinkController::class, 'show']);
 Route::post('/links/{code}/activate-token', [LinkController::class, 'activateToken']); // Aktivasi token
+Route::post('/links/{code}/validate-step', [LinkController::class, 'validateStep']); // 🛡️ Validate step access
+Route::post('/links/{code}/complete-step', [LinkController::class, 'completeStep']); // 🛡️ Mark step as completed
+Route::post('/links/{code}/check-step-status', [LinkController::class, 'checkStepStatus']); // 🛡️ Check if all steps done
+Route::get('/links/session/{sid}', [LinkController::class, 'getSession']); // 🔐 Get session data
+Route::put('/links/session/{sid}/step', [LinkController::class, 'updateSessionStep']); // 🔐 Update session step
 Route::post('/links/{code}/continue', [LinkController::class, 'continue']);
 Route::get('/check-alias/{alias}', [LinkController::class, 'checkAlias']);
 Route::middleware('auth:sanctum')->patch('/links/{id}/toggle-status', [LinkController::class, 'toggleStatus']);
 Route::post('/report', [ReportController::class, 'store']);
+
+// Public referral info (no auth required)
+Route::get('/referral/info', [ReferralController::class, 'getReferrerInfo']);
 
 // -------------------- AUTH PROTECTED (Only Logged In) --------------------
 Route::middleware(['auth:sanctum', 'is_banned'])->group(function () {
@@ -89,12 +100,93 @@ Route::middleware(['auth:sanctum', 'is_banned'])->group(function () {
     Route::put('/user/profile', [ProfileController::class, 'updateProfile']);
     Route::get('/user/login-history', [LoginHistoryController::class, 'index']);
     Route::get('/user/levels', [UserLevelController::class, 'index']);
+    Route::get('/user/stats', [\App\Http\Controllers\Api\UserStatsController::class, 'headerStats']);
 
+    // Ad Level Configs (public read for ads-info page + dropdown)
+    Route::get('/ad-levels', [AdLevelController::class, 'index']);
+
+    // ✅ Get Current User Profile (for sidebar)
+    Route::get('/user/me', function (\Illuminate\Http\Request $request) {
+        $user = $request->user();
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'role' => $user->role,
+            ]
+        ]);
+    });
+
+    // Update user profile (name)
+    Route::put('/user/profile', function (Request $request) {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'name' => 'required|string|max:255',
+        ]);
+
+        $user->update(['name' => $validated['name']]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Profile updated successfully',
+            'data' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'role' => $user->role,
+            ]
+        ]);
+    });
+
+    // Change user password
+    Route::put('/user/password', function (Request $request) {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'current_password' => 'required|string',
+            'new_password' => 'required|string|min:8|confirmed',
+        ]);
+
+        // Check if user has a password (OAuth users don't)
+        if (!$user->password) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Kamu login dengan Google. Tidak bisa ganti password.',
+            ], 400);
+        }
+
+        // Verify current password
+        if (!Hash::check($validated['current_password'], $user->password)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Password saat ini salah.',
+            ], 400);
+        }
+
+        // Update password
+        $user->update(['password' => Hash::make($validated['new_password'])]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Password berhasil diubah!',
+        ]);
+    });
 
 
     // Statistik & kontrol link (hanya user)
     Route::get('/dashboard/overview', [DashboardController::class, 'overview']);
     Route::get('/dashboard/trends', [DashboardController::class, 'trends']);
+
+    // ✅ Analytics Stats Endpoints
+    Route::get('/dashboard/summary/earnings', [StatsController::class, 'getEarnings']);
+    Route::get('/dashboard/summary/clicks', [StatsController::class, 'getClicks']);
+    Route::get('/dashboard/summary/referrals', [StatsController::class, 'getReferralStats']);
+    Route::get('/dashboard/summary/cpm', [StatsController::class, 'getAverageCpm']);
+    Route::get('/dashboard/analytics', [StatsController::class, 'analytics']);
+    Route::get('/analytics/monthly-performance', [StatsController::class, 'monthlyPerformance']);
 
 
     // Payment Methods
@@ -180,9 +272,12 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::get('/reports', [AdminReportController::class, 'index']);
     Route::delete('/reports/{id}', [AdminReportController::class, 'destroy']);
 
-    // Level Management
+    // Level Management (User Progression Levels)
     Route::get('/levels', [AdminLevelController::class, 'index']);
     Route::put('/levels/{id}', [AdminLevelController::class, 'update']);
+
+    // Ad Level Configs CRUD
+    Route::apiResource('ad-levels', AdminAdLevelController::class);
 
     Route::post('/notify', function (Request $request) {
         // Validasi Input

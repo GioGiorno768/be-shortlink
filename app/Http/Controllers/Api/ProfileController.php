@@ -16,7 +16,7 @@ class ProfileController extends Controller
     public function updatePassword(Request $request)
     {
         $user = $request->user();
-        
+
         $rules = [
             'password' => ['required', 'confirmed', Password::defaults()],
         ];

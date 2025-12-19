@@ -17,7 +17,7 @@ class Payout extends Model
         'amount',
         'method',
         'payment_method_id',
-        'account',
+        'account_details',
         'fee',
         'status',
         'note',
@@ -51,5 +51,4 @@ class Payout extends Model
     {
         return $this->belongsTo(User::class, 'processed_by');
     }
-
 }

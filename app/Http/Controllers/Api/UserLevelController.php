@@ -49,20 +49,20 @@ class UserLevelController extends Controller
             $nextLevelMin = $nextLevel->min_total_earnings;
             $nextLevelCpm = $nextLevel->bonus_percentage;
             $nextLevelName = $nextLevel->name;
-            
+
             $neededToNext = $nextLevelMin - $currentEarnings;
-            
+
             // Hitung persentase progress menuju level berikutnya
             // Rumus: (Earnings saat ini / Target Level Berikutnya) * 100
             // Atau range based: ($currentEarnings - $currentLevelMin) / ($nextLevelMin - $currentLevelMin)
             // User request example: progress_percent: 10. 
             // Kita pakai simple percentage dari total target saja agar mudah dipahami, 
             // atau jika user baru mulai, 0/500000 = 0%.
-            
+
             if ($nextLevelMin > 0) {
                 $progressPercent = ($currentEarnings / $nextLevelMin) * 100;
             }
-            
+
             // Cap at 100% just in case
             if ($progressPercent > 100) $progressPercent = 100;
         } else {
@@ -72,11 +72,13 @@ class UserLevelController extends Controller
 
         // 6. Format Data Card
         $cardData = [
-            "current_level" => $currentLevel ? $currentLevel->name : "No Level",
+            "current_level" => $currentLevel ? $currentLevel->slug : "beginner",
+            "current_level_name" => $currentLevel ? $currentLevel->name : "Beginner",
             "current_earnings" => round($currentEarnings, 2),
             "current_level_cpm" => $currentLevel ? $currentLevel->bonus_percentage : 0,
             "current_level_min" => $currentLevel ? $currentLevel->min_total_earnings : 0,
-            "next_level_id" => $nextLevelName, // User minta 'next_level_id' tapi isinya nama level
+            "next_level_id" => $nextLevel ? $nextLevel->slug : null,
+            "next_level_name" => $nextLevelName,
             "next_level_min" => $nextLevelMin,
             "next_level_cpm" => $nextLevelCpm,
             "needed_to_next_level" => round($neededToNext, 2),
@@ -86,9 +88,15 @@ class UserLevelController extends Controller
         // 7. Format List Level
         $listData = $levels->map(function ($level) use ($currentEarnings) {
             return [
-                "title" => $level->name,
+                "id" => $level->slug,
+                "name" => $level->name,
+                "icon" => $level->icon,
                 "min_earnings" => $level->min_total_earnings,
-                "cpm_bonus_percent" => $level->bonus_percentage,
+                "cpm_bonus" => $level->bonus_percentage,
+                "benefits" => $level->benefits ?? [],
+                "icon_color" => $level->icon_color,
+                "bg_color" => $level->bg_color,
+                "border_color" => $level->border_color,
                 "locked" => $currentEarnings < $level->min_total_earnings,
             ];
         });

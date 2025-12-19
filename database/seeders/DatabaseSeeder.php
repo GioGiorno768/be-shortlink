@@ -32,23 +32,80 @@ class DatabaseSeeder extends Seeder
             SuperAdminSeeder::class,
         ]);
 
-        // Levels
+        // Levels with full styling data
         $levels = [
-            ['Level 1', 0, 0],
-            ['Level 2', 2000000, 5],
-            ['Level 3', 4000000, 10],
-            ['Level 4', 8000000, 15],
-            ['Level 5', 16000000, 20],
-            ['Level 6', 32000000, 25],
+            [
+                'name' => 'Beginner',
+                'slug' => 'beginner',
+                'icon' => 'shield',
+                'min_total_earnings' => 0,
+                'bonus_percentage' => 0,
+                'benefits' => ['Basic Analytics', 'Standard Support', 'Monthly Payout'],
+                'icon_color' => 'text-gray-500',
+                'bg_color' => 'bg-white',
+                'border_color' => 'border-gray-200',
+            ],
+            [
+                'name' => 'Rookie',
+                'slug' => 'rookie',
+                'icon' => 'star',
+                'min_total_earnings' => 50,
+                'bonus_percentage' => 5,
+                'benefits' => ['+5% CPM Bonus', 'Priority Support', 'Faster Withdrawal'],
+                'icon_color' => 'text-green-500',
+                'bg_color' => 'bg-green-50',
+                'border_color' => 'border-green-200',
+            ],
+            [
+                'name' => 'Elite',
+                'slug' => 'elite',
+                'icon' => 'trophy',
+                'min_total_earnings' => 250,
+                'bonus_percentage' => 10,
+                'benefits' => ['+10% CPM Bonus', 'Daily Payout Request', 'No Captcha for Users'],
+                'icon_color' => 'text-blue-500',
+                'bg_color' => 'bg-blue-50',
+                'border_color' => 'border-blue-200',
+            ],
+            [
+                'name' => 'Pro',
+                'slug' => 'pro',
+                'icon' => 'gem',
+                'min_total_earnings' => 1000,
+                'bonus_percentage' => 15,
+                'benefits' => ['+15% CPM Bonus', 'Dedicated Manager', 'Custom Alias Domain'],
+                'icon_color' => 'text-purple-500',
+                'bg_color' => 'bg-purple-50',
+                'border_color' => 'border-purple-200',
+            ],
+            [
+                'name' => 'Master',
+                'slug' => 'master',
+                'icon' => 'rocket',
+                'min_total_earnings' => 5000,
+                'bonus_percentage' => 25,
+                'benefits' => ['+25% CPM Bonus', 'Instant Payout', 'Exclusive Events'],
+                'icon_color' => 'text-red-500',
+                'bg_color' => 'bg-red-50',
+                'border_color' => 'border-red-200',
+            ],
+            [
+                'name' => 'Mythic',
+                'slug' => 'mythic',
+                'icon' => 'crown',
+                'min_total_earnings' => 20000,
+                'bonus_percentage' => 40,
+                'benefits' => ['+40% CPM Bonus', 'VIP Status', 'Revenue Share 100%'],
+                'icon_color' => 'text-yellow-500',
+                'bg_color' => 'bg-yellow-50',
+                'border_color' => 'border-yellow-200',
+            ],
         ];
 
-        foreach ($levels as [$name, $min_earnings, $bonus]) {
+        foreach ($levels as $levelData) {
             Level::updateOrCreate(
-                ['name' => $name],
-                [
-                    'min_total_earnings' => $min_earnings,
-                    'bonus_percentage' => $bonus,
-                ]
+                ['slug' => $levelData['slug']],
+                $levelData
             );
         }
     }

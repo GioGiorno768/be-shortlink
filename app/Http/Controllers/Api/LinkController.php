@@ -223,12 +223,15 @@ class LinkController extends Controller
 
         // Simpan sementara di Redis (10 menit)
         Cache::put("link:{$link->code}", [
-            'id' => $link->id, // ✅ Fix: Save ID to cache
+            'id' => $link->id,
             'original_url' => $link->original_url,
             'user_id' => $link->user_id,
             'password' => $link->password,
             'expired_at' => $link->expired_at,
             'earn_per_click' => $link->earn_per_click,
+            'ad_level' => $link->ad_level, // ✅ Include ad_level
+            'status' => $link->status,
+            'is_banned' => false,
         ], now()->addMinutes(10));
 
         // Jika user login, bisa menambahkan logika referral bonus
@@ -291,6 +294,7 @@ class LinkController extends Controller
                     'is_banned' => $link->is_banned,
                     'ban_reason' => $link->ban_reason,
                     'status' => $link->status,
+                    'ad_level' => $link->ad_level ?? 1, // ✅ Include ad_level
                 ];
 
                 Cache::put("link:{$code}", $cachedLink, now()->addMinutes(10));
@@ -316,10 +320,47 @@ class LinkController extends Controller
                 return $this->errorResponse('This link has been banned by administrator.', 403, ['reason' => $cachedLink['ban_reason'] ?? '']);
             }
 
+            // 🟡 Determine ad_level and maxSteps early (needed for token cache)
+            $userId = $cachedLink['user_id'] ?? null;
+            $adLevel = (int) ($cachedLink['ad_level'] ?? 1);
+            $maxSteps = match ($adLevel) {
+                1 => 1,
+                2 => 2,
+                3 => 3,
+                4 => 3,
+                default => 1,
+            };
+
+            // ========================================
+            // 🎟️ GUEST LINK FREE PASS - BEFORE RATE LIMIT
+            // Direct redirects bypass rate limiting for better UX
+            // ========================================
+            if (!$userId) {
+                $linkModel = Link::find($cachedLink['id']);
+                $currentViews = $linkModel->views ?? 0;
+
+                // Click 1 (views=0): Always direct redirect - FREE PASS (no rate limit)
+                if ($currentViews === 0) {
+                    $linkModel->increment('views');
+                    Log::info("🎟️ Guest Free Pass: Click 1 - Direct redirect", ['code' => $code]);
+                    return redirect()->away($cachedLink['original_url']);
+                }
+
+                // Click 3+ (views>=2): Check against next_confirm_at for FREE PASS
+                if ($currentViews >= 2) {
+                    $nextConfirm = $linkModel->next_confirm_at ?? 2;
+                    if ($currentViews < $nextConfirm) {
+                        // Free pass - direct redirect (no rate limit)
+                        $linkModel->increment('views');
+                        Log::info("🎟️ Guest Free Pass: Click {$currentViews} - Direct redirect (next confirm at {$nextConfirm})", ['code' => $code]);
+                        return redirect()->away($cachedLink['original_url']);
+                    }
+                }
+                // If not a direct redirect, continue to rate limiter and confirmation page
+            }
+
             // 🧩 3️⃣ Buat token unik & simpan berdasarkan IP dan User-Agent
             $token = Str::uuid()->toString();
-            // aktifkan jika masuk production
-            // $ip = $request->ip();
             $ip = $request->ip();
             if (app()->environment('local') && $ip === '127.0.0.1') {
                 $ip = '36.84.69.10';
@@ -331,51 +372,47 @@ class LinkController extends Controller
                 'token' => $token,
                 'ip' => $ip,
                 'user_agent' => $userAgent,
-                'status' => 'pending', // Token belum aktif, perlu aktivasi dulu
-                'min_wait_seconds' => 10, // User harus nunggu minimal 10 detik
+                'status' => 'pending',
+                'min_wait_seconds' => 5, // Reduced to 5 seconds
                 'created_at' => now(),
-                'activated_at' => null
-            ], now()->addSeconds(120));
+                'activated_at' => null,
+                // 🛡️ Step validation fields
+                'completed_step' => 0,
+                'max_steps' => $maxSteps,
+                'ad_level' => $adLevel,
+            ], now()->addSeconds(600)); // 10 minutes for multi-step
 
             // 🛡️ 4️⃣ Rate limiting (maks 3 request per menit per IP)
             $rateKey = "rate:{$ip}:{$code}";
             if (RateLimiter::tooManyAttempts($rateKey, 3)) {
                 return $this->errorResponse('Too many requests. Please wait a moment.', 429);
             }
-            RateLimiter::hit($rateKey, 60); // 1 menit
+            RateLimiter::hit($rateKey, 60);
 
             // 📈 5️⃣ Catat tampilan awal (pre-view) ringan ke Redis
             Cache::increment("preview:{$code}:count");
 
-            // 💬 6️⃣ Kirim response ke frontend
-            // 💬 6️⃣ Logika Bisnis: Guest vs Member
-            $userId = $cachedLink['user_id'] ?? null;
-            $originalUrl = $cachedLink['original_url'];
-
-            // 🟢 SKENARIO 1: Guest Link (Link Gratisan)
-            // Redirect ke Loading Page di Frontend Utama (3 detik)
+            // 🟢 SKENARIO 1: Guest Link - CONFIRMATION PAGE (after rate limit)
             if (!$userId) {
+                $linkModel = Link::find($cachedLink['id']);
+                $currentViews = $linkModel->views ?? 0;
+
+                // Click 2 or confirmation threshold reached - show confirmation page
                 Cache::increment("view:guest:{$code}");
-                // Hardcoded Frontend URL (Localhost for dev)
-                $frontendUrl = "http://localhost:3000/go";
-                return redirect("{$frontendUrl}?code={$code}&token={$token}");
+                $sessionId = $this->createUrlSession($code, $token, 1, 1, 1, true);
+                $viewerUrl = "http://localhost:3001/go";
+                Log::info("🎟️ Guest Free Pass: Click {$currentViews} - Show confirmation", ['code' => $code]);
+                return redirect("{$viewerUrl}?s={$sessionId}");
             }
 
             // 🟡 SKENARIO 2: Member Link (Safelink)
-            // Lempar ke Safelink Viewer buat cuan.
-            $articles = [
-                'future-of-ai-2025',
-                'iphone-18-rumors',
-                'best-coding-laptops',
-                'react-19-features',
-                'cybersecurity-tips'
-            ];
-            $randomSlug = $articles[array_rand($articles)];
+            Log::info("🔍 DEBUG show(): ad_level={$adLevel}, maxSteps={$maxSteps}");
 
-            // Hardcoded Viewer URL (Localhost for dev)
-            $viewerUrl = "http://localhost:3001/article/{$randomSlug}";
+            // 🔐 Create session for clean URL
+            $sessionId = $this->createUrlSession($code, $token, 1, $maxSteps, $adLevel, false);
 
-            return redirect("{$viewerUrl}?code={$code}&token={$token}");
+            $viewerUrl = "http://localhost:3001/article/step1";
+            return redirect("{$viewerUrl}?s={$sessionId}");
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             // 🚫 7️⃣ Jika link tidak ditemukan
             return $this->errorResponse('Shortlink not found.', 404);
@@ -447,6 +484,237 @@ class LinkController extends Controller
         ], 'Token berhasil diaktifkan.');
     }
 
+
+    // ==============================
+    // 🛡️ VALIDATE STEP — Check if user can access this step
+    // ==============================
+    public function validateStep($code, Request $request)
+    {
+        $request->validate([
+            'token' => 'required|string',
+            'step' => 'required|integer|min:1|max:5',
+        ]);
+
+        $inputToken = $request->input('token');
+        $requestedStep = (int) $request->input('step');
+        $ip = $request->ip();
+        if (app()->environment('local') && $ip === '127.0.0.1') {
+            $ip = '36.84.69.10';
+        }
+        $userAgent = $request->header('User-Agent');
+        $tokenKey = "token:{$code}:" . md5("{$ip}-{$userAgent}");
+
+        // 1️⃣ Cek token di cache
+        $cachedToken = Cache::get($tokenKey);
+        if (!$cachedToken) {
+            return $this->errorResponse('Token tidak ditemukan. Silakan mulai dari awal.', 404, ['redirect' => true]);
+        }
+
+        // 2️⃣ Validasi token match
+        if ($cachedToken['token'] !== $inputToken) {
+            return $this->errorResponse('Token tidak valid.', 403, ['redirect' => true]);
+        }
+
+        // 3️⃣ Cek step yang sudah selesai
+        $completedStep = $cachedToken['completed_step'] ?? 0;
+        $maxSteps = $cachedToken['max_steps'] ?? 1;
+
+        // 4️⃣ User hanya boleh akses step berikutnya (completedStep + 1)
+        $allowedStep = $completedStep + 1;
+
+        if ($requestedStep > $allowedStep) {
+            Log::warning("🛡️ Step skip detected", [
+                'code' => $code,
+                'requested_step' => $requestedStep,
+                'completed_step' => $completedStep,
+                'allowed_step' => $allowedStep,
+            ]);
+            return $this->errorResponse('Anda harus menyelesaikan langkah sebelumnya.', 403, [
+                'redirect' => true,
+                'redirect_step' => $allowedStep,
+            ]);
+        }
+
+        return $this->successResponse([
+            'valid' => true,
+            'current_step' => $requestedStep,
+            'completed_step' => $completedStep,
+            'max_steps' => $maxSteps,
+        ], 'Step valid.');
+    }
+
+
+    // ==============================
+    // 🛡️ COMPLETE STEP — Mark step as completed
+    // ==============================
+    public function completeStep($code, Request $request)
+    {
+        $request->validate([
+            'token' => 'required|string',
+            'step' => 'required|integer|min:1|max:5',
+        ]);
+
+        $inputToken = $request->input('token');
+        $completingStep = (int) $request->input('step');
+        $ip = $request->ip();
+        if (app()->environment('local') && $ip === '127.0.0.1') {
+            $ip = '36.84.69.10';
+        }
+        $userAgent = $request->header('User-Agent');
+        $tokenKey = "token:{$code}:" . md5("{$ip}-{$userAgent}");
+
+        // 1️⃣ Cek token di cache
+        $cachedToken = Cache::get($tokenKey);
+        if (!$cachedToken) {
+            return $this->errorResponse('Token tidak ditemukan.', 404, ['redirect' => true]);
+        }
+
+        // 2️⃣ Validasi token match
+        if ($cachedToken['token'] !== $inputToken) {
+            return $this->errorResponse('Token tidak valid.', 403, ['redirect' => true]);
+        }
+
+        // 3️⃣ Cek tidak boleh skip step
+        $currentCompleted = $cachedToken['completed_step'] ?? 0;
+        if ($completingStep > $currentCompleted + 1) {
+            return $this->errorResponse('Tidak bisa melewati langkah.', 403, ['redirect' => true]);
+        }
+
+        // 4️⃣ Update completed_step
+        $cachedToken['completed_step'] = $completingStep;
+        Cache::put($tokenKey, $cachedToken, now()->addSeconds(600));
+
+        $maxSteps = $cachedToken['max_steps'] ?? 1;
+        $isComplete = $completingStep >= $maxSteps;
+
+        Log::info("🛡️ Step completed", [
+            'code' => $code,
+            'completed_step' => $completingStep,
+            'max_steps' => $maxSteps,
+            'all_complete' => $isComplete,
+        ]);
+
+        return $this->successResponse([
+            'completed_step' => $completingStep,
+            'max_steps' => $maxSteps,
+            'is_complete' => $isComplete,
+            'next_step' => $isComplete ? null : $completingStep + 1,
+        ], "Langkah {$completingStep} selesai.");
+    }
+
+
+    // ==============================
+    // 🛡️ CHECK STEP STATUS — Get current step completion status
+    // ==============================
+    public function checkStepStatus($code, Request $request)
+    {
+        $request->validate([
+            'token' => 'required|string',
+        ]);
+
+        $inputToken = $request->input('token');
+        $ip = $request->ip();
+        if (app()->environment('local') && $ip === '127.0.0.1') {
+            $ip = '36.84.69.10';
+        }
+        $userAgent = $request->header('User-Agent');
+        $tokenKey = "token:{$code}:" . md5("{$ip}-{$userAgent}");
+
+        // Cek token di cache
+        $cachedToken = Cache::get($tokenKey);
+        if (!$cachedToken) {
+            return $this->errorResponse('Token tidak ditemukan.', 404, ['all_complete' => false]);
+        }
+
+        // Validasi token match
+        if ($cachedToken['token'] !== $inputToken) {
+            return $this->errorResponse('Token tidak valid.', 403, ['all_complete' => false]);
+        }
+
+        $completedStep = $cachedToken['completed_step'] ?? 0;
+        $maxSteps = $cachedToken['max_steps'] ?? 1;
+        $allComplete = $completedStep >= $maxSteps;
+
+        return $this->successResponse([
+            'completed_step' => $completedStep,
+            'max_steps' => $maxSteps,
+            'all_complete' => $allComplete,
+        ], $allComplete ? 'All steps completed.' : 'Steps not yet complete.');
+    }
+
+
+    // ==============================
+    // 🔐 SESSION MANAGEMENT — Hide URL Parameters
+    // ==============================
+
+    /**
+     * Generate short session ID
+     */
+    private function generateSessionId(): string
+    {
+        return substr(str_shuffle('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'), 0, 12);
+    }
+
+    /**
+     * Create session - Store link data in Redis, return session ID
+     * Called internally when redirecting to viewer
+     */
+    private function createUrlSession(string $code, string $token, int $step, int $maxSteps, int $adLevel, bool $isGuest = false): string
+    {
+        $sessionId = $this->generateSessionId();
+        $sessionKey = "url_session:{$sessionId}";
+
+        Cache::put($sessionKey, [
+            'code' => $code,
+            'token' => $token,
+            'step' => $step,
+            'max_steps' => $maxSteps,
+            'ad_level' => $adLevel,
+            'is_guest' => $isGuest,
+            'created_at' => now()->toISOString(),
+        ], now()->addMinutes(15)); // 15 minutes TTL
+
+        return $sessionId;
+    }
+
+    /**
+     * GET /links/session/{sid}
+     * Get session data for frontend
+     */
+    public function getSession($sessionId)
+    {
+        $sessionKey = "url_session:{$sessionId}";
+        $sessionData = Cache::get($sessionKey);
+
+        if (!$sessionData) {
+            return $this->errorResponse('Session tidak ditemukan atau sudah kadaluarsa.', 404);
+        }
+
+        return $this->successResponse($sessionData, 'Session retrieved.');
+    }
+
+    /**
+     * PUT /links/session/{sid}/step
+     * Update current step in session (when navigating between steps)
+     */
+    public function updateSessionStep($sessionId, Request $request)
+    {
+        $request->validate([
+            'step' => 'required|integer|min:1|max:5',
+        ]);
+
+        $sessionKey = "url_session:{$sessionId}";
+        $sessionData = Cache::get($sessionKey);
+
+        if (!$sessionData) {
+            return $this->errorResponse('Session tidak ditemukan atau sudah kadaluarsa.', 404);
+        }
+
+        $sessionData['step'] = (int) $request->input('step');
+        Cache::put($sessionKey, $sessionData, now()->addMinutes(15)); // Refresh TTL
+
+        return $this->successResponse($sessionData, 'Session step updated.');
+    }
 
     // ==============================
     // 3️⃣ CONTINUE — Validasi Token dari Redis
@@ -523,6 +791,47 @@ class LinkController extends Controller
 
         // Check if this is a guest link (user_id is null)
         $isGuestLink = is_null($linkModel->user_id);
+
+        // ========================================
+        // 🎟️ GUEST LINK: Free Pass Confirmation Logic
+        // ========================================
+        if ($isGuestLink) {
+            // Increment views for guest link
+            $linkModel->increment('views');
+
+            // Set next_confirm_at = current views + random(1,4)
+            $currentViews = $linkModel->views;
+            $randomInterval = rand(1, 4);
+            $nextConfirm = $currentViews + $randomInterval;
+            $linkModel->update(['next_confirm_at' => $nextConfirm]);
+
+            Log::info("🎟️ Guest Free Pass: views={$currentViews}, next_confirm_at={$nextConfirm}");
+        }
+
+        // 🛡️ STEP VALIDATION: Only for NON-guest links (member safelinks)
+        if (!$isGuestLink) {
+            $userAgent = $request->header('User-Agent') ?? '';
+            $tokenKey = "token:{$code}:" . md5("{$ip}-{$userAgent}");
+            $cachedToken = Cache::get($tokenKey);
+
+            if ($cachedToken) {
+                $completedStep = $cachedToken['completed_step'] ?? 0;
+                $maxSteps = $cachedToken['max_steps'] ?? 1;
+
+                if ($completedStep < $maxSteps) {
+                    Log::warning("🛡️ Direct continue attempt blocked", [
+                        'code' => $code,
+                        'completed_step' => $completedStep,
+                        'max_steps' => $maxSteps,
+                    ]);
+                    return $this->errorResponse('Anda harus menyelesaikan semua langkah terlebih dahulu.', 403, [
+                        'completed_step' => $completedStep,
+                        'max_steps' => $maxSteps,
+                        'redirect' => true,
+                    ]);
+                }
+            }
+        }
 
         $validation = $linkService->validateToken($code, $inputToken, $ip, $userAgent, $isGuestLink);
         if (!$validation['valid']) {

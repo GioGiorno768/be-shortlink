@@ -80,7 +80,7 @@ class AdminWithdrawalController extends Controller
                     // Ambil nama admin yang mengunci (opsional, butuh relation processedBy di model Payout)
                     $processor = User::find($payout->processed_by);
                     $processorName = $processor ? $processor->name : 'Admin lain';
-                    
+
                     return $this->errorResponse("Penarikan ini sedang diproses oleh {$processorName}. Anda tidak dapat mengubah statusnya.", 403);
                 }
             }
@@ -94,34 +94,8 @@ class AdminWithdrawalController extends Controller
 
             switch ($newStatus) {
                 case 'approved':
-                    // Karena saldo SUDAH dipotong di PayoutController@store,
-                    // Di sini kita hanya hitung Komisi Referral (jika ada).
-
-                    if ($oldStatus !== 'approved' && $oldStatus !== 'paid') {
-                        if ($user->referred_by) {
-                            $referrer = User::find($user->referred_by);
-                            if ($referrer) {
-                                // Komisi biasanya dari nominal bersih (100.000)
-                                // $percentage = config('shortlink.commission_percentage', 10);
-                                
-                                // 🔥🔥 DYNAMIC REFERRAL PERCENTAGE 🔥🔥
-                                $setting = Setting::where('key', 'referral_percentage')->first();
-                                $percentage = $setting ? ($setting->value['percentage'] ?? 10) : 10;
-
-                                $commissionAmount = $payout->amount * ($percentage / 100);
-
-                                $referrer->increment('balance', $commissionAmount);
-
-                                Transaction::create([
-                                    'user_id' => $referrer->id,
-                                    'type' => 'referral_commission',
-                                    'amount' => $commissionAmount,
-                                    'description' => "Komisi $percentage% dari withdrawal user " . $user->name,
-                                    'reference_id' => $payout->id,
-                                ]);
-                            }
-                        }
-                    }
+                    // Status disetujui, tapi belum dibayar
+                    // Commission akan diberikan saat status = 'paid'
                     break;
 
                 case 'rejected':
@@ -143,6 +117,28 @@ class AdminWithdrawalController extends Controller
                     // Kurangi pending balance secara permanen (Uang keluar dari sistem)
                     if ($user->pending_balance >= $totalLockedAmount) {
                         $user->decrement('pending_balance', $totalLockedAmount);
+                    }
+
+                    // 🔥🔥 REFERRAL COMMISSION - Diberikan saat PAID (uang sudah dikirim) 🔥🔥
+                    if ($user->referred_by) {
+                        $referrer = User::find($user->referred_by);
+                        if ($referrer) {
+                            // 🔥 DYNAMIC REFERRAL PERCENTAGE 🔥
+                            $setting = Setting::where('key', 'referral_percentage')->first();
+                            $percentage = $setting ? ($setting->value['percentage'] ?? 10) : 10;
+
+                            $commissionAmount = $payout->amount * ($percentage / 100);
+
+                            $referrer->increment('balance', $commissionAmount);
+
+                            Transaction::create([
+                                'user_id' => $referrer->id,
+                                'type' => 'referral_commission',
+                                'amount' => $commissionAmount,
+                                'description' => "Komisi $percentage% dari withdrawal user " . $user->name,
+                                'reference_id' => $payout->id,
+                            ]);
+                        }
                     }
                     break;
             }
@@ -176,7 +172,6 @@ class AdminWithdrawalController extends Controller
             DB::commit();
 
             return $this->successResponse($payout, 'Status penarikan berhasil diperbarui.');
-
         } catch (\Exception $e) {
             DB::rollBack();
             return $this->errorResponse('Error: ' . $e->getMessage(), 500);
@@ -204,5 +199,4 @@ class AdminWithdrawalController extends Controller
 
         return $this->successResponse($stats, 'Daily stats retrieved');
     }
-
 }
