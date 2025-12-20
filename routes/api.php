@@ -115,28 +115,7 @@ Route::middleware(['auth:sanctum', 'is_banned'])->group(function () {
                 'name' => $user->name,
                 'email' => $user->email,
                 'role' => $user->role,
-            ]
-        ]);
-    });
-
-    // Update user profile (name)
-    Route::put('/user/profile', function (Request $request) {
-        $user = $request->user();
-
-        $validated = $request->validate([
-            'name' => 'required|string|max:255',
-        ]);
-
-        $user->update(['name' => $validated['name']]);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Profile updated successfully',
-            'data' => [
-                'id' => $user->id,
-                'name' => $user->name,
-                'email' => $user->email,
-                'role' => $user->role,
+                'avatar' => $user->avatar ?? 'avatar-1',
             ]
         ]);
     });

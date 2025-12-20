@@ -42,6 +42,7 @@ class User extends Authenticatable implements MustVerifyEmail
         'last_active_at', // <-- TAMBAHKAN INI
         'last_device_fingerprint', // Anti-fraud
         'last_login_ip',           // Anti-fraud
+        'avatar',                  // User avatar (avatar-1, avatar-2, etc.)
     ];
 
     /**

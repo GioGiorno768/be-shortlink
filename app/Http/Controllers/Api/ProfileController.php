@@ -45,6 +45,7 @@ class ProfileController extends Controller
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'phone_number' => ['nullable', 'string', 'max:20'],
+            'avatar' => ['nullable', 'string', 'max:50'], // avatar-1, avatar-2, etc.
         ]);
 
         $user->update($validated);
