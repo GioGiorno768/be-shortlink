@@ -24,7 +24,7 @@ class PayoutController extends Controller
         // 1. Ambil settingan minimal withdraw dari database
         $wdSetting = Setting::where('key', 'withdrawal_settings')->first();
         $settings = $wdSetting ? $wdSetting->value : [];
-        
+
         $minAmount = $settings['min_amount'] ?? 10000;
         $maxAmount = $settings['max_amount'] ?? 0;
         $limitCount = $settings['limit_count'] ?? 0;
@@ -59,14 +59,22 @@ class PayoutController extends Controller
             ->where('user_id', $user->id)
             ->firstOrFail();
 
-        $requestAmount = $request->amount;         // Misal: 100.000
-        $adminFee = $paymentMethod->fee;           // Misal: 6.000
-        $totalDeduction = $requestAmount + $adminFee; // Total: 106.000
+        // 💵 All monetary values are in USD (consistent storage)
+        $requestAmount = $request->amount;        // Dalam USD (dari frontend)
+        $adminFee = $paymentMethod->fee;          // Fee dalam USD (dari DB)
+        $totalDeduction = $requestAmount + $adminFee;  // Total dalam USD
 
-        // 3. Cek Saldo (Harus Cukup untuk Nominal + Fee)
+        // Exchange rate for error message display only
+        $usdToIdrRate = 15800;
+
+        // 3. Cek Saldo (Harus Cukup untuk Nominal + Fee) - Semua dalam USD
         if ($user->balance < $totalDeduction) {
+            // Format error message dalam IDR untuk user readability
+            $balanceIdr = $user->balance * $usdToIdrRate;
+            $totalIdr = $totalDeduction * $usdToIdrRate;
+            $feeIdr = $adminFee * $usdToIdrRate;
             return $this->errorResponse('Saldo tidak mencukupi.', 422, [
-                'balance' => ['Saldo Anda Rp ' . number_format($user->balance) . '. Total yang dibutuhkan Rp ' . number_format($totalDeduction) . ' (Termasuk biaya admin Rp ' . number_format($adminFee) . ').']
+                'balance' => ['Saldo Anda Rp ' . number_format($balanceIdr) . '. Total yang dibutuhkan Rp ' . number_format($totalIdr) . ' (Termasuk biaya admin Rp ' . number_format($feeIdr) . ').']
             ]);
         }
 
@@ -77,16 +85,19 @@ class PayoutController extends Controller
             $user->decrement('balance', $totalDeduction);
             $user->increment('pending_balance', $totalDeduction);
 
-            // 5. Buat Record Payout
+            // 5. Buat Record Payout (semua dalam USD)
             $payout = Payout::create([
                 'user_id' => $user->id,
                 'payment_method_id' => $paymentMethod->id,
-                'amount' => $requestAmount, // Disimpan 100.000 (User terima segini)
-                'fee' => $adminFee,         // Disimpan 6.000 (Untuk info admin)
+                'amount' => $requestAmount,   // Dalam USD
+                'fee' => $adminFee,           // Dalam USD
                 'status' => 'pending',
             ]);
 
             DB::commit();
+
+            // Clear header stats cache so balance updates immediately
+            \App\Http\Controllers\Api\UserStatsController::clearCache($user->id);
 
             return $this->successResponse([
                 'id' => $payout->id,
@@ -95,24 +106,50 @@ class PayoutController extends Controller
                 'total_deducted' => $payout->amount + $payout->fee,
                 'status' => 'pending'
             ], 'Permintaan penarikan berhasil dibuat.', 201);
-
         } catch (\Exception $e) {
             DB::rollBack();
             return $this->errorResponse('Terjadi kesalahan sistem.', 500);
         }
     }
     /**
-     * 📄 Lihat riwayat penarikan user
+     * 📄 Lihat riwayat penarikan user dengan filter & pagination
+     * Query params:
+     * - per_page: items per page (default 8)
+     * - sort: 'newest' (default) or 'oldest'
+     * - method: payment method name (e.g., 'OVO', 'BCA')
+     * - search: search by transaction_id
      */
     public function index(Request $request)
     {
         $user = auth()->user();
-        $perPage = $request->get('per_page', 5);
+        $perPage = $request->get('per_page', 8);
+        $sort = $request->get('sort', 'newest');
+        $method = $request->get('method');
+        $search = $request->get('search');
 
-        $payouts = Payout::where('user_id', $user->id)
-            ->with('paymentMethod')
-            ->latest()
-            ->paginate($perPage);
+        $query = Payout::where('user_id', $user->id)
+            ->with('paymentMethod');
+
+        // Filter by payment method
+        if ($method && $method !== 'all') {
+            $query->whereHas('paymentMethod', function ($q) use ($method) {
+                $q->where('bank_name', $method);
+            });
+        }
+
+        // Search by transaction_id
+        if ($search) {
+            $query->where('transaction_id', 'like', "%{$search}%");
+        }
+
+        // Apply sorting
+        if ($sort === 'oldest') {
+            $query->oldest();
+        } else {
+            $query->latest();
+        }
+
+        $payouts = $query->paginate($perPage);
 
         // Sertakan info min_withdrawal agar Frontend tahu batasnya
         $wdSetting = Setting::where('key', 'withdrawal_settings')->first();
@@ -165,7 +202,7 @@ class PayoutController extends Controller
     }
 
 
-  public function cancel(Request $request, $id)
+    public function cancel(Request $request, $id)
     {
         $user = Auth::user();
 
@@ -204,8 +241,10 @@ class PayoutController extends Controller
 
             DB::commit();
 
-            return $this->successResponse(null, 'Penarikan berhasil dibatalkan. Dana sebesar Rp ' . number_format($totalRefund, 0, ',', '.') . ' telah dikembalikan ke saldo utama.');
+            // Clear header stats cache so balance updates immediately
+            \App\Http\Controllers\Api\UserStatsController::clearCache($user->id);
 
+            return $this->successResponse(null, 'Penarikan berhasil dibatalkan. Dana sebesar Rp ' . number_format($totalRefund, 0, ',', '.') . ' telah dikembalikan ke saldo utama.');
         } catch (\Exception $e) {
             DB::rollBack();
             return $this->errorResponse('Gagal membatalkan penarikan: ' . $e->getMessage(), 500);
@@ -219,12 +258,12 @@ class PayoutController extends Controller
     public function destroy($id)
     {
         $user = Auth::user();
-        
+
         // Hanya boleh hapus yang SUDAH SELESAI (paid/rejected) atau Cancelled
         // Yang 'pending' harus lewat fungsi cancel() di atas agar saldo balik.
         $payout = Payout::where('user_id', $user->id)
             ->where('id', $id)
-            ->whereIn('status', ['paid', 'rejected', 'cancelled']) 
+            ->whereIn('status', ['paid', 'rejected', 'cancelled'])
             ->first();
 
         if (!$payout) {

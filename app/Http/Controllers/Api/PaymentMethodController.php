@@ -23,18 +23,25 @@ class PaymentMethodController extends Controller
 
     /**
      * Helper Private untuk Mendapatkan Fee dari Setting
+     * NOTE: Settings store fees in IDR, but we store in USD for consistency
      */
     private function getFeeForBank($bankName)
     {
         $setting = Setting::where('key', 'bank_fees')->first();
-        
-        // Default hardcode jika setting belum dibuat admin
+
+        // Default hardcode jika setting belum dibuat admin (dalam IDR)
         $fees = $setting ? $setting->value : ['OTHERS' => 6500];
 
         $bankKey = strtoupper($bankName); // Ubah ke huruf kapital: "bca" -> "BCA"
 
-        // Cek apakah ada key spesifik, jika tidak pakai OTHERS, jika tidak pakai 6500
-        return $fees[$bankKey] ?? ($fees['OTHERS'] ?? 6500);
+        // Get fee in IDR from settings
+        $feeIdr = $fees[$bankKey] ?? ($fees['OTHERS'] ?? 6500);
+
+        // Convert to USD for storage (same rate as PayoutController)
+        $usdToIdrRate = 15800;
+        $feeUsd = round($feeIdr / $usdToIdrRate, 4);
+
+        return $feeUsd;
     }
 
     public function store(Request $request)
@@ -58,7 +65,7 @@ class PaymentMethodController extends Controller
             'account_number' => $request->account_number,
             'bank_name' => strtoupper($request->bank_name), // Simpan format kapital
             'fee' => $fee, // Simpan fee
-            'is_verified' => true, 
+            'is_verified' => true,
         ]);
 
         return $this->successResponse($payment, 'Metode pembayaran berhasil ditambahkan.', 201);
@@ -67,7 +74,7 @@ class PaymentMethodController extends Controller
     public function update(Request $request, $id)
     {
         $user = Auth::user();
-        
+
         // Cek apakah metode ini sedang dipakai untuk withdrawal pending
         if ($user->payouts()->where('payment_method_id', $id)->where('status', 'pending')->exists()) {
             return $this->errorResponse('Tidak bisa mengubah rekening yang sedang dalam proses penarikan.', 400);
@@ -95,7 +102,7 @@ class PaymentMethodController extends Controller
 
         return $this->successResponse($paymentMethod, 'Metode pembayaran diperbarui.');
     }
-    
+
     /**
      * 🧩 Set sebagai default
      */

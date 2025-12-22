@@ -165,7 +165,7 @@ class AdminWithdrawalController extends Controller
                 'Withdrawal Status Update',
                 $notifMessage,
                 $notifType,
-                '/user/withdrawals', // URL frontend user
+                'PAYMENT', // URL frontend user
                 $expiresAt // ✅ Expiration Date
             ));
 
@@ -180,23 +180,59 @@ class AdminWithdrawalController extends Controller
 
     public function getDailyStats(Request $request)
     {
-        $startDate = $request->input('start_date');
-        $endDate = $request->input('end_date');
+        $today = now()->startOfDay();
+        $yesterday = now()->subDay()->startOfDay();
+        $yesterdayEnd = now()->startOfDay();
 
-        $query = Payout::where('status', 'paid')
-            ->selectRaw('DATE(updated_at) as date, COUNT(*) as total_count, SUM(amount) as total_amount')
-            ->groupBy('date')
-            ->orderBy('date', 'desc');
+        // 1. Paid Today Stats
+        $paidToday = Payout::where('status', 'paid')
+            ->where('updated_at', '>=', $today)
+            ->selectRaw('COALESCE(SUM(amount), 0) as amount, COUNT(*) as count')
+            ->first();
 
-        if ($startDate) {
-            $query->whereDate('updated_at', '>=', $startDate);
+        // 2. Paid Yesterday (for trend calculation)
+        $paidYesterday = Payout::where('status', 'paid')
+            ->whereBetween('updated_at', [$yesterday, $yesterdayEnd])
+            ->selectRaw('COUNT(DISTINCT user_id) as users')
+            ->first();
+
+        // 3. Unique Users Paid Today
+        $usersPaidToday = Payout::where('status', 'paid')
+            ->where('updated_at', '>=', $today)
+            ->distinct('user_id')
+            ->count('user_id');
+
+        // 4. Unique Users Paid Yesterday
+        $usersPaidYesterday = $paidYesterday->users ?? 0;
+
+        // 5. Calculate Trend
+        $trend = 0;
+        if ($usersPaidYesterday > 0) {
+            $trend = round((($usersPaidToday - $usersPaidYesterday) / $usersPaidYesterday) * 100, 1);
+        } elseif ($usersPaidToday > 0) {
+            $trend = 100;
         }
-        if ($endDate) {
-            $query->whereDate('updated_at', '<=', $endDate);
-        }
 
-        $stats = $query->get();
+        // 6. Highest Withdrawal Today
+        $highestToday = Payout::with('user:id,name')
+            ->where('status', 'paid')
+            ->where('updated_at', '>=', $today)
+            ->orderByDesc('amount')
+            ->first();
 
-        return $this->successResponse($stats, 'Daily stats retrieved');
+        return $this->successResponse([
+            'paid_today' => [
+                'amount' => (float) ($paidToday->amount ?? 0),
+                'count' => (int) ($paidToday->count ?? 0),
+            ],
+            'highest_withdrawal' => [
+                'amount' => (float) ($highestToday->amount ?? 0),
+                'user' => $highestToday->user?->name ?? 'N/A',
+            ],
+            'total_users_paid' => [
+                'count' => $usersPaidToday,
+                'trend' => $trend,
+            ],
+        ], 'Daily stats retrieved');
     }
 }
