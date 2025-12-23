@@ -33,6 +33,9 @@ class PayoutController extends Controller
         $request->validate([
             'payment_method_id' => 'required|exists:payment_methods,id',
             'amount' => 'required|numeric|min:' . $minAmount,
+            'currency' => 'nullable|string|max:10', // User's currency code (e.g., 'IDR', 'USD')
+            'local_amount' => 'nullable|numeric',   // Amount in user's local currency
+            'exchange_rate' => 'nullable|numeric',  // Exchange rate at time of request
         ]);
 
         // CEK MAX AMOUNT
@@ -85,12 +88,15 @@ class PayoutController extends Controller
             $user->decrement('balance', $totalDeduction);
             $user->increment('pending_balance', $totalDeduction);
 
-            // 5. Buat Record Payout (semua dalam USD)
+            // 5. Buat Record Payout (semua dalam USD + currency info untuk admin)
             $payout = Payout::create([
                 'user_id' => $user->id,
                 'payment_method_id' => $paymentMethod->id,
                 'amount' => $requestAmount,   // Dalam USD
                 'fee' => $adminFee,           // Dalam USD
+                'currency' => $request->currency ?? 'USD',  // User's currency
+                'local_amount' => $request->local_amount,    // Amount in local currency
+                'exchange_rate' => $request->exchange_rate ?? 1,  // Exchange rate
                 'status' => 'pending',
             ]);
 
@@ -127,6 +133,15 @@ class PayoutController extends Controller
         $method = $request->get('method');
         $search = $request->get('search');
 
+        // Calculate total stats from ALL payouts (not just current page)
+        $totalPending = Payout::where('user_id', $user->id)
+            ->where('status', 'pending')
+            ->sum(DB::raw('amount + fee'));
+
+        $totalWithdrawn = Payout::where('user_id', $user->id)
+            ->where('status', 'paid')
+            ->sum('amount');
+
         $query = Payout::where('user_id', $user->id)
             ->with('paymentMethod');
 
@@ -157,6 +172,8 @@ class PayoutController extends Controller
 
         return $this->successResponse([
             'balance' => $user->balance,
+            'total_pending' => $totalPending,
+            'total_withdrawn' => $totalWithdrawn,
             'min_withdrawal' => $settings['min_amount'] ?? 10000,
             'max_withdrawal' => $settings['max_amount'] ?? 0,
             'limit_count' => $settings['limit_count'] ?? 0,

@@ -470,8 +470,8 @@ class StatsController extends Controller
                 } elseif ($metric === 'valid_clicks') {
                     $value = (int) $groupItems->sum('valid_views');
                 } else {
-                    // clicks = all views
-                    $value = (int) $groupItems->sum('views');
+                    // clicks = valid views only (to avoid user confusion)
+                    $value = (int) $groupItems->sum('valid_views');
                 }
             }
 

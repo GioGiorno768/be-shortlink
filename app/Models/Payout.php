@@ -19,9 +19,12 @@ class Payout extends Model
         'payment_method_id',
         'account_details',
         'fee',
+        'currency',        // User's currency code (e.g., 'IDR', 'USD')
+        'local_amount',    // Amount in user's local currency
+        'exchange_rate',   // Exchange rate at time of withdrawal
         'status',
         'note',
-        'processed_by', // ✅ Tambahkan ini
+        'processed_by',
     ];
 
     protected static function boot()

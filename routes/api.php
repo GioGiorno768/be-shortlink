@@ -216,7 +216,9 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::get('/dashboard/trends', [AdminDashboardController::class, 'trends']);
 
     Route::get('/links', [AdminLinkController::class, 'index']);
-    Route::post('/links/bulk-ban', [AdminLinkController::class, 'bulkBan']); // <-- New Route
+    Route::get('/links/stats', [AdminLinkController::class, 'stats']); // Stats for dashboard cards
+    Route::post('/links/bulk-ban', [AdminLinkController::class, 'bulkBan']); // Legacy: by keyword
+    Route::post('/links/bulk-action', [AdminLinkController::class, 'bulkAction']); // New: by IDs
     Route::put('/links/{id}', [AdminLinkController::class, 'update']);
     Route::delete('/links/{id}', [AdminLinkController::class, 'destroy']);
 

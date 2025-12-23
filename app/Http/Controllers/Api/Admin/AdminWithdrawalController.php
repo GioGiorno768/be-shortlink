@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use App\Notifications\GeneralNotification;
 use App\Models\Setting;
+use App\Http\Controllers\Api\UserStatsController;
 
 class AdminWithdrawalController extends Controller
 {
@@ -21,20 +22,22 @@ class AdminWithdrawalController extends Controller
         $perPage = $request->input('per_page', 10);
         $status = $request->input('status'); // Ambil filter status
         $search = $request->input('search'); // Ambil keyword pencarian
+        $sort = $request->input('sort', 'newest'); // Sort: newest/oldest
+        $level = $request->input('level'); // User level filter
 
         // Mulai Query
         $query = Payout::with(['user', 'paymentMethod']);
 
         // 1. Filter Berdasarkan Status
         if ($status && in_array($status, ['pending', 'approved', 'paid', 'rejected'])) {
-            $query->where('status', $status);
+            $query->where('payouts.status', $status);
         }
 
         // 2. Fitur Pencarian (Search)
         if ($search) {
             $query->where(function ($q) use ($search) {
                 // Cari berdasarkan Transaction ID
-                $q->where('transaction_id', 'like', "%{$search}%")
+                $q->where('payouts.transaction_id', 'like', "%{$search}%")
                     // ATAU Cari berdasarkan Nama/Email User
                     ->orWhereHas('user', function ($u) use ($search) {
                         $u->where('name', 'like', "%{$search}%")
@@ -48,8 +51,42 @@ class AdminWithdrawalController extends Controller
             });
         }
 
+        // 3. Apply Sorting
+        if ($level && $level !== 'all') {
+            // Sort by user level - join to levels table
+            $query->join('users', 'payouts.user_id', '=', 'users.id')
+                ->leftJoin('levels', 'users.current_level_id', '=', 'levels.id')
+                ->select('payouts.*');
+
+            if ($level === 'highest') {
+                // Sort by level from HIGHEST to LOWEST (mythic first)
+                // levels.min_total_earnings DESC = higher levels first
+                // NULL levels (no level) go last
+                $query->orderByRaw('COALESCE(levels.min_total_earnings, 0) DESC');
+            } else {
+                // 'lowest' - Sort by level from LOWEST to HIGHEST (beginner first)
+                // levels.min_total_earnings ASC = lower levels first
+                // NULL levels (no level) go first (treated as beginner)
+                $query->orderByRaw('COALESCE(levels.min_total_earnings, 0) ASC');
+            }
+
+            // Secondary sort by date
+            if ($sort === 'oldest') {
+                $query->orderBy('payouts.created_at', 'asc');
+            } else {
+                $query->orderBy('payouts.created_at', 'desc');
+            }
+        } else {
+            // No level sort - just sort by date
+            if ($sort === 'oldest') {
+                $query->oldest();
+            } else {
+                $query->latest();
+            }
+        }
+
         // Eksekusi query dengan pagination
-        $withdrawals = $query->latest()->paginate($perPage);
+        $withdrawals = $query->paginate($perPage);
 
         return $this->paginatedResponse($withdrawals, 'Withdrawals retrieved');
     }
@@ -169,6 +206,9 @@ class AdminWithdrawalController extends Controller
                 $expiresAt // ✅ Expiration Date
             ));
 
+            // 🔄 Clear user's header stats cache so balance updates immediately
+            UserStatsController::clearCache($user->id);
+
             DB::commit();
 
             return $this->successResponse($payout, 'Status penarikan berhasil diperbarui.');
@@ -213,10 +253,9 @@ class AdminWithdrawalController extends Controller
             $trend = 100;
         }
 
-        // 6. Highest Withdrawal Today
-        $highestToday = Payout::with('user:id,name')
+        // 6. Highest Withdrawal (All Time)
+        $highestAllTime = Payout::with('user:id,name')
             ->where('status', 'paid')
-            ->where('updated_at', '>=', $today)
             ->orderByDesc('amount')
             ->first();
 
@@ -226,8 +265,8 @@ class AdminWithdrawalController extends Controller
                 'count' => (int) ($paidToday->count ?? 0),
             ],
             'highest_withdrawal' => [
-                'amount' => (float) ($highestToday->amount ?? 0),
-                'user' => $highestToday->user?->name ?? 'N/A',
+                'amount' => (float) ($highestAllTime->amount ?? 0),
+                'user' => $highestAllTime->user?->name ?? 'N/A',
             ],
             'total_users_paid' => [
                 'count' => $usersPaidToday,

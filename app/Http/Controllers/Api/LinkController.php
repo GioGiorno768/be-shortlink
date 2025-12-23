@@ -28,9 +28,9 @@ class LinkController extends Controller
         $user = $request->user();
 
         // Base Query dengan Aggregates (Optimized: Use denormalized columns)
-        // Kita assume kolom 'views', 'valid_views', 'total_earned' ada di tabel links
+        // valid_views = view yang valid (lolos anti-cheat), ini yang ditampil ke user
         $query = Link::where('user_id', $user->id)
-            ->selectRaw('links.*, links.views as total_views, (links.earn_per_click * 1000) as calculated_cpm');
+            ->selectRaw('links.*, links.valid_views as total_views, (links.earn_per_click * 1000) as calculated_cpm');
         // ->withCount removed (redundant)
         // ->withSum removed (redundant)
 
@@ -317,7 +317,10 @@ class LinkController extends Controller
 
             // ✅ PRIORITY 3: Check BANNED
             if (isset($cachedLink['is_banned']) && $cachedLink['is_banned']) {
-                return $this->errorResponse('This link has been banned by administrator.', 403, ['reason' => $cachedLink['ban_reason'] ?? '']);
+                $viewerUrl = "http://localhost:3001/banned";
+                $reason = urlencode($cachedLink['ban_reason'] ?? '');
+                Log::info("Redirecting to banned page for code: {$code}");
+                return redirect("{$viewerUrl}?reason={$reason}");
             }
 
             // 🟡 Determine ad_level and maxSteps early (needed for token cache)
@@ -766,7 +769,9 @@ class LinkController extends Controller
 
         // Check banned status
         if ($linkModel->is_banned) {
-            return $this->errorResponse('This link has been banned by administrator.', 403, ['reason' => $linkModel->ban_reason]);
+            $viewerUrl = "http://localhost:3001/banned";
+            $reason = urlencode($linkModel->ban_reason ?? '');
+            return redirect("{$viewerUrl}?reason={$reason}");
         }
 
         // Check active status
@@ -893,12 +898,11 @@ class LinkController extends Controller
             // ================================================================
 
             // 2. Update Link Stats
-            // 🛡️ Only increment views if valid (User Request: Stop incrementing invalid views)
-            if ($isValidView) {
-                $linkModel->increment('views');
-            }
+            // views = TOTAL semua klik (termasuk fraud) - untuk analytics
+            // valid_views = klik valid yang menghasilkan earning
+            $linkModel->increment('views'); // ALWAYS increment for all clicks
 
-            if ($isUnique) {
+            if ($isValidView && $isUnique) {
                 $linkModel->increment('valid_views');
                 $linkModel->increment('total_earned', $finalEarned);
             }
