@@ -5,12 +5,15 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Payout;
 use App\Models\Setting;
-use App\Models\PaymentMethod; // Tambahkan Model Setting
+use App\Models\PaymentMethod;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Notification;
+use App\Notifications\GeneralNotification;
 
 
 
@@ -104,6 +107,9 @@ class PayoutController extends Controller
 
             // Clear header stats cache so balance updates immediately
             \App\Http\Controllers\Api\UserStatsController::clearCache($user->id);
+
+            // 6. 🔔 Notify all admins & super-admins about new withdrawal request
+            $this->notifyAdminsAboutWithdrawal($payout, $user);
 
             return $this->successResponse([
                 'id' => $payout->id,
@@ -290,5 +296,43 @@ class PayoutController extends Controller
         $payout->delete();
 
         return $this->successResponse(null, 'Riwayat penarikan berhasil dihapus.');
+    }
+
+    /**
+     * 🔔 Notify all admins & super-admins about new withdrawal request
+     */
+    private function notifyAdminsAboutWithdrawal(Payout $payout, $user)
+    {
+        // Get all admins and super-admins
+        $admins = User::whereIn('role', ['admin', 'super_admin'])->get();
+
+        if ($admins->isEmpty()) {
+            return;
+        }
+
+        // Prepare amount display
+        $amountDisplay = '$' . number_format($payout->amount, 2);
+
+        // Add local currency if available
+        if ($payout->local_amount && $payout->currency && $payout->currency !== 'USD') {
+            $localAmount = $payout->currency === 'IDR'
+                ? 'Rp ' . number_format($payout->local_amount, 0, ',', '.')
+                : number_format($payout->local_amount, 2) . ' ' . $payout->currency;
+            $amountDisplay .= " (≈ {$localAmount})";
+        }
+
+        // Create notification with correct constructor args:
+        // (title, message, type, category, actionUrl, expiresAt)
+        $notification = new GeneralNotification(
+            'New Withdrawal Request',
+            "New withdrawal of {$amountDisplay} from {$user->name}",
+            'info',        // type
+            'payment',     // category (for filtering)
+            '/admin/withdrawals', // actionUrl
+            null           // expiresAt (permanent)
+        );
+
+        // Send to all admins
+        Notification::send($admins, $notification);
     }
 }
