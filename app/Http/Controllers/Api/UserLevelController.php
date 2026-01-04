@@ -14,31 +14,30 @@ class UserLevelController extends Controller
     {
         $user = $request->user();
 
-        // 1. Hitung Total Earnings (Real-time dari tabel views)
-        // Kita gunakan logic yang sama dengan StatsController untuk konsistensi
-        // 1. Hitung Total Earnings (Optimized: Ambil dari kolom user)
+        // 1. User earnings - REAL-TIME (no cache, changes frequently)
         $currentEarnings = $user->total_earnings;
 
-        // 2. Ambil Semua Level
-        $levels = Level::orderBy('min_total_earnings', 'asc')->get();
+        // 2. Get all levels - CACHED (config rarely changes)
+        $levels = Cache::remember('account_levels_config', 600, function () {
+            return Level::orderBy('min_total_earnings', 'asc')->get();
+        });
 
-        // 3. Tentukan Level Saat Ini
-        // Level saat ini adalah level dengan min_earnings terbesar yang <= currentEarnings
+        // 3. Determine current level (computed per-user)
         $currentLevel = $levels->filter(function ($level) use ($currentEarnings) {
             return $currentEarnings >= $level->min_total_earnings;
         })->last();
 
-        // Jika belum mencapai level apapun (misal earnings 0), default ke level pertama atau null
+        // Default to first level if no level reached
         if (!$currentLevel && $levels->isNotEmpty()) {
             $currentLevel = $levels->first();
         }
 
-        // 4. Tentukan Level Berikutnya
+        // 4. Determine next level (computed per-user)
         $nextLevel = $levels->first(function ($level) use ($currentEarnings) {
             return $level->min_total_earnings > $currentEarnings;
         });
 
-        // 5. Hitung Data Progress
+        // 5. Calculate progress data (computed per-user)
         $progressPercent = 0;
         $neededToNext = 0;
         $nextLevelMin = 0;
@@ -52,25 +51,18 @@ class UserLevelController extends Controller
 
             $neededToNext = $nextLevelMin - $currentEarnings;
 
-            // Hitung persentase progress menuju level berikutnya
-            // Rumus: (Earnings saat ini / Target Level Berikutnya) * 100
-            // Atau range based: ($currentEarnings - $currentLevelMin) / ($nextLevelMin - $currentLevelMin)
-            // User request example: progress_percent: 10. 
-            // Kita pakai simple percentage dari total target saja agar mudah dipahami, 
-            // atau jika user baru mulai, 0/500000 = 0%.
-
             if ($nextLevelMin > 0) {
                 $progressPercent = ($currentEarnings / $nextLevelMin) * 100;
             }
 
-            // Cap at 100% just in case
+            // Cap at 100%
             if ($progressPercent > 100) $progressPercent = 100;
         } else {
-            // Sudah level max
+            // Already at max level
             $progressPercent = 100;
         }
 
-        // 6. Format Data Card
+        // 6. Format card data (user-specific)
         $cardData = [
             "current_level" => $currentLevel ? $currentLevel->slug : "beginner",
             "current_level_name" => $currentLevel ? $currentLevel->name : "Beginner",
@@ -85,7 +77,7 @@ class UserLevelController extends Controller
             "progress_percent" => round($progressPercent, 1),
         ];
 
-        // 7. Format List Level
+        // 7. Format level list (uses cached levels, but locked status is per-user)
         $listData = $levels->map(function ($level) use ($currentEarnings) {
             return [
                 "id" => $level->slug,
@@ -97,7 +89,7 @@ class UserLevelController extends Controller
                 "icon_color" => $level->icon_color,
                 "bg_color" => $level->bg_color,
                 "border_color" => $level->border_color,
-                "locked" => $currentEarnings < $level->min_total_earnings,
+                "locked" => $currentEarnings < $level->min_total_earnings, // Computed per-user
             ];
         });
 

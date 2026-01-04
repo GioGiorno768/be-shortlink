@@ -20,7 +20,11 @@ class ReferralController extends Controller
         // Cache for 2 minutes
         $data = Cache::remember($cacheKey, 120, function () use ($user) {
             // 1. Get referral commission rate from settings
-            $commissionSetting = Setting::where('key', 'referral_percentage')->first();
+            $commissionSetting = Setting::where('key', 'referral_settings')->first();
+            if (!$commissionSetting) {
+                // Fallback to legacy key
+                $commissionSetting = Setting::where('key', 'referral_percentage')->first();
+            }
             $commissionRate = $commissionSetting ? ($commissionSetting->value['percentage'] ?? 10) : 10;
 
             // 2. Count stats with optimized queries
@@ -108,5 +112,74 @@ class ReferralController extends Controller
         return $this->successResponse([
             'name' => $referrer->name,
         ], 'Referrer info retrieved');
+    }
+
+    /**
+     * Check if user is eligible for referral bonus (PUBLIC - no auth required)
+     * Anti-fraud: checks if device fingerprint or IP already exists in database
+     */
+    public function checkEligibility(Request $request)
+    {
+        $request->validate([
+            'visitor_id' => 'nullable|string',
+            'referral_code' => 'required|string',
+        ]);
+
+        $visitorId = $request->input('visitor_id');
+        $referralCode = $request->input('referral_code');
+
+        // Get IP address
+        $ip = $request->ip();
+        if (app()->environment('local') && $ip === '127.0.0.1') {
+            $ip = '36.84.69.10'; // Test IP for local dev
+        }
+
+        // 1. Validasi referral code
+        $referrer = User::where('referral_code', $referralCode)
+            ->select('id', 'name')
+            ->first();
+
+        if (!$referrer) {
+            return $this->successResponse([
+                'eligible' => false,
+                'reason' => 'invalid_code',
+            ]);
+        }
+
+        // Get referral settings for anti-fraud toggles
+        $referralSetting = Setting::where('key', 'referral_settings')->first();
+        $fingerprintCheckEnabled = $referralSetting?->value['fingerprint_check_enabled'] ?? true;
+        $ipLimitEnabled = $referralSetting?->value['ip_limit_enabled'] ?? true;
+        $maxAccountsPerIp = $referralSetting?->value['max_accounts_per_ip'] ?? 2;
+
+        // 2. Cek fingerprint di database (if enabled)
+        if ($fingerprintCheckEnabled && $visitorId) {
+            $fingerprintExists = User::where('last_device_fingerprint', $visitorId)->exists();
+
+            if ($fingerprintExists) {
+                return $this->successResponse([
+                    'eligible' => false,
+                    'reason' => 'device_registered',
+                ]);
+            }
+        }
+
+        // 3. Cek IP limit (if enabled)
+        if ($ipLimitEnabled) {
+            $accountsFromIp = User::where('last_login_ip', $ip)->count();
+
+            if ($accountsFromIp >= $maxAccountsPerIp) {
+                return $this->successResponse([
+                    'eligible' => false,
+                    'reason' => 'ip_limit_exceeded',
+                ]);
+            }
+        }
+
+        // 4. Eligible - passed all checks
+        return $this->successResponse([
+            'eligible' => true,
+            'referrer_name' => $referrer->name,
+        ]);
     }
 }

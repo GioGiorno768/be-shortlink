@@ -9,6 +9,41 @@ Route::get('/', function () {
 
 // Guest Link Free Pass + Member Link Redirect
 Route::get('/{code}', function ($code) {
+    // Reserved paths - don't treat as shortlink
+    $reservedPaths = [
+        'terms',
+        'terms-of-service',
+        'privacy',
+        'privacy-policy',
+        'report',
+        'report-abuse',
+        'contact',
+        'about',
+        'faq',
+        'payout-rates',
+        'ads-info',
+        'login',
+        'register',
+        'forgot-password',
+        'reset-password',
+        'dashboard',
+        'admin',
+        'super-admin',
+        'notifications',
+        'settings',
+        'profile',
+        'new-link',
+        'links',
+        'analytics',
+        'withdrawal',
+        'api',
+        'sanctum',
+    ];
+
+    if (in_array(strtolower($code), $reservedPaths)) {
+        abort(404); // Let frontend handle these routes
+    }
+
     $link = Link::where('code', $code)->firstOrFail();
 
     // ========================================

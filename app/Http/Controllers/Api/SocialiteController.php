@@ -90,6 +90,7 @@ class SocialiteController extends Controller
             $loginIp = $request->ip();
             if (app()->environment('local') && $loginIp === '127.0.0.1') {
                 $loginIp = '36.84.69.10';
+                // $loginIp = '8.8.8.8';
             }
 
             Log::info('📝 GOOGLE LOGIN - Received Data', [

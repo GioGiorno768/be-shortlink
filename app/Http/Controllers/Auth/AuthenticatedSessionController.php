@@ -8,7 +8,9 @@ use Illuminate\Http\Response;
 use App\Http\Requests\Auth\LoginRequest;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Cache;
 use App\Models\User;
+use App\Models\Setting;
 use Illuminate\Validation\ValidationException;
 use App\Services\LoginLogger;
 
@@ -19,6 +21,19 @@ class AuthenticatedSessionController extends Controller
      */
     public function store(LoginRequest $request)
     {
+        // 🔒 CHECK IF LOGIN IS DISABLED
+        $generalSettings = Cache::remember('general_settings', 300, function () {
+            $setting = Setting::where('key', 'general_settings')->first();
+            return $setting ? $setting->value : ['disable_login' => false];
+        });
+
+        if ($generalSettings['disable_login'] ?? false) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Login is temporarily disabled. Please try again later.',
+            ], 403);
+        }
+
         // ✅ Validation langsung di controller
         // $request->validate([
         //     'email' => ['required', 'string', 'email'],
@@ -44,14 +59,20 @@ class AuthenticatedSessionController extends Controller
 
         // 🔥🔥 CEK STATUS BANNED 🔥🔥
         if ($user->is_banned) {
-            // Logout untuk membersihkan session (jika ada)
-            Auth::guard('web')->logout();
-            $request->session()->invalidate();
-            $request->session()->regenerateToken();
+            // Logout untuk membersihkan (revoke all tokens for API)
+            $user->tokens()->delete();
+
+            // Only invalidate session if it exists (web routes have session, API routes don't)
+            if ($request->hasSession()) {
+                Auth::guard('web')->logout();
+                $request->session()->invalidate();
+                $request->session()->regenerateToken();
+            }
 
             return response()->json([
-                'message' => 'Your account has been suspended. Please contact support.',
-                'error' => 'Account Banned'
+                'message' => 'Your account has been suspended.',
+                'error' => 'Account Banned',
+                'ban_reason' => $user->ban_reason ?? 'Pelanggaran Terms of Service',
             ], 403);
         }
 
@@ -69,6 +90,7 @@ class AuthenticatedSessionController extends Controller
         $loginIp = $request->ip();
         if (app()->environment('local') && $loginIp === '127.0.0.1') {
             $loginIp = '36.84.69.10';
+            // $loginIp = '8.8.8.8';
         }
 
         \Log::info('📝 LOGIN - Received Data', [

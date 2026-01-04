@@ -17,7 +17,7 @@ class PaymentMethodController extends Controller
      */
     public function index()
     {
-        $methods = auth()->user()->paymentMethods()->get();
+        $methods = auth()->user()->paymentMethods()->with('template:id,name,currency,type,fee')->get();
         return $this->successResponse($methods, 'Payment methods retrieved');
     }
 
@@ -47,7 +47,8 @@ class PaymentMethodController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'method_type' => 'required|in:bank_transfer,ewallet',
+            'template_id' => 'nullable|exists:payment_method_templates,id',
+            'method_type' => 'required|in:bank_transfer,ewallet,crypto',
             'account_name' => 'required|string|max:255',
             'account_number' => 'nullable|string|max:255',
             'bank_name' => 'required|string|max:255',
@@ -55,18 +56,38 @@ class PaymentMethodController extends Controller
 
         $user = Auth::user();
 
-        // Hitung Fee Otomatis
-        $fee = $this->getFeeForBank($request->bank_name);
+        // Get fee from template if provided, otherwise calculate
+        $fee = 0;
+        if ($request->template_id) {
+            $template = \App\Models\PaymentMethodTemplate::find($request->template_id);
+            if ($template) {
+                // Template fee is in template's currency - convert to USD for storage
+                // All fees in payment_methods table must be in USD for consistent calculation
+                if ($template->currency === 'IDR') {
+                    // Convert IDR to USD (approximate rate)
+                    $fee = $template->fee / 16000;
+                } else {
+                    // Already in USD or other currency that doesn't need conversion
+                    $fee = $template->fee;
+                }
+            }
+        } else {
+            $fee = $this->getFeeForBank($request->bank_name);
+        }
 
         $payment = PaymentMethod::create([
             'user_id' => $user->id,
+            'template_id' => $request->template_id,
             'method_type' => $request->method_type,
             'account_name' => $request->account_name,
             'account_number' => $request->account_number,
-            'bank_name' => strtoupper($request->bank_name), // Simpan format kapital
-            'fee' => $fee, // Simpan fee
+            'bank_name' => strtoupper($request->bank_name),
+            'fee' => $fee,
             'is_verified' => true,
         ]);
+
+        // Load template for response
+        $payment->load('template:id,name,currency,type,fee');
 
         return $this->successResponse($payment, 'Metode pembayaran berhasil ditambahkan.', 201);
     }

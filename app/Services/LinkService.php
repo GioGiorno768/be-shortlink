@@ -88,6 +88,11 @@ class LinkService
         }
 
         // 3. Cek Waktu (Bot Protection & Expiry)
+        // Get configurable settings
+        $linkSettings = $this->getLinkSettings();
+        $minWait = $linkSettings['min_wait_seconds'] ?? 12;
+        $expiry = $linkSettings['expiry_seconds'] ?? 180;
+
         // SKIP timer check untuk guest links (mereka udah nunggu di halaman /go)
         if (!$isGuestLink && $cachedCreated) {
             try {
@@ -95,16 +100,16 @@ class LinkService
                 $now = now();
                 $diff = $created->diffInSeconds($now);
 
-                if ($diff < 12) {
+                if ($diff < $minWait) {
                     return [
                         'valid' => false,
                         'error' => 'Please wait for the timer to finish.',
                         'status' => 429,
-                        'remaining' => 14 - $diff
+                        'remaining' => ($minWait + 2) - $diff
                     ];
                 }
 
-                if ($diff > 180) {
+                if ($diff > $expiry) {
                     Cache::forget($tokenKey);
                     return ['valid' => false, 'error' => 'Token expired.'];
                 }
@@ -120,7 +125,7 @@ class LinkService
                 $now = now();
                 $diff = $created->diffInSeconds($now);
 
-                if ($diff > 180) {
+                if ($diff > $expiry) {
                     Cache::forget($tokenKey);
                     return ['valid' => false, 'error' => 'Token expired.'];
                 }
@@ -150,9 +155,18 @@ class LinkService
         $owner = $link->user;
 
         // ============================================================
-        // 🛡️ LAYER 1: SELF-CLICK DETECTION (DB Reference)
+        // 🛡️ LAYER 1: GLOBAL SELF-CLICK LIMIT (by IP match)
+        // Cek apakah IP visitor sama dengan owner's last login IP
+        // Kalau sama, cek global daily limit (bukan per-link)
         // ============================================================
+        $ipMatch = false;
+        $isSelfClick = false;
+
         if ($owner) {
+            $ipMatch = $owner->last_login_ip && $owner->last_login_ip === $ip;
+            $fpMatch = $visitorId && $owner->last_device_fingerprint && $owner->last_device_fingerprint === $visitorId;
+            $isSelfClick = $ipMatch && $fpMatch; // Full detection untuk tentukan earning rate
+
             Log::info('🔍 LAYER 1 - Self-Click Check', [
                 'link_id' => $link->id,
                 'owner_id' => $owner->id,
@@ -160,51 +174,70 @@ class LinkService
                 'visitor_fingerprint' => $visitorId,
                 'owner_last_login_ip' => $owner->last_login_ip,
                 'owner_last_fingerprint' => $owner->last_device_fingerprint,
-                'ip_match' => ($owner->last_login_ip && $owner->last_login_ip === $ip),
-                'fp_match' => ($visitorId && $owner->last_device_fingerprint && $owner->last_device_fingerprint === $visitorId),
+                'ip_match' => $ipMatch,
+                'fp_match' => $fpMatch,
+                'is_self_click' => $isSelfClick,
             ]);
 
-            // Cek IP Login Terakhir Owner
-            if ($owner->last_login_ip && $owner->last_login_ip === $ip) {
-                Log::warning('❌ SELF-CLICK DETECTED - IP Match', [
-                    'visitor_ip' => $ip,
-                    'owner_ip' => $owner->last_login_ip
-                ]);
-                return [
-                    'earning' => 0,
-                    'is_valid' => false,
-                    'rejection_reason' => 'Self Click (IP Match)',
-                    'shadow_ban' => true
-                ];
-            }
+            // Kalau IP match dengan owner, cek GLOBAL daily limit
+            if ($ipMatch) {
+                $selfClickSettings = $this->getSelfClickSettings();
 
-            // Cek Fingerprint Login Terakhir Owner
-            if ($visitorId && $owner->last_device_fingerprint && $owner->last_device_fingerprint === $visitorId) {
-                Log::warning('❌ SELF-CLICK DETECTED - Fingerprint Match', [
-                    'visitor_fp' => $visitorId,
-                    'owner_fp' => $owner->last_device_fingerprint
-                ]);
-                return [
-                    'earning' => 0,
-                    'is_valid' => false,
-                    'rejection_reason' => 'Self Click (Fingerprint Match)',
-                    'shadow_ban' => true
-                ];
-            }
+                // Check if self-click earning is enabled
+                if (!$selfClickSettings['enabled']) {
+                    Log::warning('❌ BLOCKED - Self-click disabled (IP match)', [
+                        'owner_id' => $owner->id
+                    ]);
+                    return [
+                        'earning' => 0,
+                        'is_valid' => false,
+                        'rejection_reason' => 'Self Click (Disabled)',
+                        'shadow_ban' => true
+                    ];
+                }
 
-            Log::info('✅ LAYER 1 PASSED - Not a self-click');
+                // Check GLOBAL daily limit (1x per user per 24h, BUKAN per link)
+                $today = now()->format('Y-m-d');
+                $globalSelfClickKey = "global_self_click:{$owner->id}:{$today}";
+                $currentCount = (int) Redis::get($globalSelfClickKey);
+
+                Log::info('🔍 LAYER 1 - Global Self-Click Limit Check', [
+                    'owner_id' => $owner->id,
+                    'current_count' => $currentCount,
+                    'limit' => $selfClickSettings['daily_limit'],
+                ]);
+
+                if ($currentCount >= $selfClickSettings['daily_limit']) {
+                    // Daily limit exceeded - BLOCK semua link dari IP ini
+                    Log::warning('❌ BLOCKED - Global self-click daily limit exceeded', [
+                        'owner_id' => $owner->id,
+                        'current_count' => $currentCount,
+                        'limit' => $selfClickSettings['daily_limit']
+                    ]);
+                    return [
+                        'earning' => 0,
+                        'is_valid' => false,
+                        'rejection_reason' => 'Self Click (Daily Limit)',
+                        'shadow_ban' => true
+                    ];
+                }
+
+                // Increment GLOBAL counter (bukan per-link)
+                Redis::incr($globalSelfClickKey);
+                Redis::expire($globalSelfClickKey, 86400);
+
+                Log::info('✅ LAYER 1 PASSED - Global self-click within limit', [
+                    'owner_id' => $owner->id,
+                    'new_count' => $currentCount + 1,
+                    'limit' => $selfClickSettings['daily_limit'],
+                    'is_full_self_click' => $isSelfClick,
+                ]);
+            }
         }
 
         // ============================================================
-        // 💰 CALCULATE EARNING (Valid View)
+        // 🛡️ LAYER 2: PER-LINK COOLDOWN 24H (Redis)
         // ============================================================
-
-        // ============================================================
-        // 🛡️ LAYER 2: PER-LINK COOLDOWN 24H (Redis + DB Fallback)
-        // Cek apakah IP atau Fingerprint sudah pernah klik link INI dalam 24 jam
-        // ============================================================
-
-        // Identifier: prioritas Fingerprint, fallback ke IP
         $identifier = $visitorId ?? $ip;
         $cacheKey = "link_cooldown:{$link->id}:{$identifier}";
 
@@ -215,23 +248,6 @@ class LinkService
         ]);
 
         $recentView = Redis::get($cacheKey);
-
-        if ($recentView === null) {
-            // Cek DB: apakah ada view dari (Fingerprint ATAU IP) untuk link INI dalam 24 jam?
-            $recentView = View::where('link_id', $link->id)
-                ->where(function ($query) use ($visitorId, $ip) {
-                    $query->where('ip_address', $ip);
-                    if ($visitorId) {
-                        $query->orWhere('visitor_id', $visitorId);
-                    }
-                })
-                ->where('created_at', '>=', now()->subHours(24))
-                ->exists();
-
-            if ($recentView) {
-                Redis::setex($cacheKey, 86400, '1'); // Cache 24h
-            }
-        }
 
         if ($recentView && $recentView !== '0') {
             Log::warning('❌ BLOCKED - Per-Link Cooldown (24h)', [
@@ -246,7 +262,7 @@ class LinkService
             ];
         }
 
-        // Jika lolos, SET cache untuk identifier ini
+        // Set cooldown for this identifier
         Redis::setex($cacheKey, 86400, '1');
 
         Log::info('✅ LAYER 2 PASSED - Setting per-link cooldown', [
@@ -255,7 +271,7 @@ class LinkService
         ]);
 
         // ============================================================
-        // ✅ VALID VIEW - Calculate Earnings
+        // 💰 CALCULATE EARNING
         // ============================================================
 
         // 1. Guest link tidak dapat earning
@@ -267,7 +283,12 @@ class LinkService
             ];
         }
 
-        // 2. Ambil Rate
+        // 2. Get self-click settings (may already be loaded above)
+        if (!isset($selfClickSettings)) {
+            $selfClickSettings = $this->getSelfClickSettings();
+        }
+
+        // 4. Ambil Rate
         $adRates = Cache::remember('ad_rates_all', 3600, function () {
             return AdRate::all();
         });
@@ -292,7 +313,18 @@ class LinkService
         $rates = $rateConfig->rates ?? [];
         $baseEarn = $rates[$levelKey] ?? ($rates['level_1'] ?? 0.00);
 
-        // 3. Hitung Bonus Level User
+        // 5. Apply self-click reduction if applicable
+        if ($isSelfClick) {
+            $originalEarn = $baseEarn;
+            $baseEarn = $baseEarn * ($selfClickSettings['cpc_percentage'] / 100);
+            Log::info('💰 SELF-CLICK EARNING', [
+                'original' => $originalEarn,
+                'percentage' => $selfClickSettings['cpc_percentage'],
+                'reduced' => $baseEarn
+            ]);
+        }
+
+        // 6. Hitung Bonus Level User
         $finalEarned = $baseEarn;
         $bonusPercentage = $owner->bonus_cpm_percentage;
         if ($bonusPercentage > 0) {
@@ -300,21 +332,53 @@ class LinkService
             $finalEarned += $bonusAmount;
         }
 
-        // Update Redis cache untuk layer 2 & 3
-        if ($visitorId && $owner) {
-            $cacheKey = "daily_limit:{$visitorId}:owner:{$owner->id}";
-            Redis::incr($cacheKey);
-            Redis::expire($cacheKey, 86400);
-
-            $linkCacheKey = "link_cooldown:{$visitorId}:link:{$link->id}";
-            Redis::setex($linkCacheKey, 86400, '1');
-        }
-
         return [
             'earning' => $finalEarned,
             'is_valid' => true,
+            'is_self_click' => $isSelfClick,
             'rejection_reason' => null
         ];
+    }
+
+    /**
+     * Get self-click settings from database/cache
+     */
+    private function getSelfClickSettings()
+    {
+        return Cache::remember('self_click_settings', 3600, function () {
+            $setting = \App\Models\Setting::where('key', 'self_click')->first();
+
+            if ($setting && $setting->value) {
+                return $setting->value;
+            }
+
+            // Default settings
+            return [
+                'enabled' => true,
+                'cpc_percentage' => 30,
+                'daily_limit' => 1,
+            ];
+        });
+    }
+
+    /**
+     * Helper function untuk ambil link settings dari cache/database
+     */
+    private function getLinkSettings()
+    {
+        return Cache::remember('link_settings', 3600, function () {
+            $setting = \App\Models\Setting::where('key', 'link_settings')->first();
+
+            if ($setting && $setting->value) {
+                return $setting->value;
+            }
+
+            // Default settings
+            return [
+                'min_wait_seconds' => 12,
+                'expiry_seconds' => 180,
+            ];
+        });
     }
 
     /**

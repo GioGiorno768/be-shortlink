@@ -17,14 +17,12 @@ class CheckBanned
     public function handle(Request $request, Closure $next): Response
     {
         if (Auth::check() && Auth::user()->is_banned) {
-            // Optional: Logout user to invalidate session/token
-            // Auth::guard('web')->logout(); 
-            // $request->session()->invalidate();
-            // $request->session()->regenerateToken();
+            $user = Auth::user();
 
             return response()->json([
-                'message' => 'Your account has been suspended. Please contact support.',
-                'error' => 'Account Banned'
+                'message' => 'Your account has been suspended.',
+                'error' => 'Account Banned',
+                'ban_reason' => $user->ban_reason ?? 'Pelanggaran Terms of Service',
             ], 403);
         }
 

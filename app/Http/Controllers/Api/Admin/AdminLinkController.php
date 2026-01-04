@@ -48,9 +48,16 @@ class AdminLinkController extends Controller
 
         // 1. Search
         if ($search) {
-            $query->where(function ($q) use ($search) {
+            // 🔧 Extract shortlink code from URL if user pastes full shortlink
+            // e.g., "localhost:3000/abc123" or "https://example.com/abc123" -> "abc123"
+            $searchCode = $search;
+            if (preg_match('#(?:https?://)?[^/]+/([a-zA-Z0-9]+)$#', $search, $matches)) {
+                $searchCode = $matches[1];
+            }
+
+            $query->where(function ($q) use ($search, $searchCode) {
                 $q->where('title', 'like', "%{$search}%")
-                    ->orWhere('code', 'like', "%{$search}%")
+                    ->orWhere('code', 'like', "%{$searchCode}%")
                     ->orWhere('original_url', 'like', "%{$search}%")
                     ->orWhereHas('user', function ($u) use ($search) {
                         $u->where('name', 'like', "%{$search}%")
@@ -121,8 +128,12 @@ class AdminLinkController extends Controller
 
         $link = Link::findOrFail($id);
 
+        // Track if ban status is changing
+        $wasBanned = $link->is_banned;
+        $isBanning = $request->is_banned ?? $link->is_banned;
+
         $link->update([
-            'is_banned' => $request->is_banned ?? $link->is_banned,
+            'is_banned' => $isBanning,
             'ban_reason' => $request->ban_reason ?? $link->ban_reason,
             'admin_comment' => $request->admin_comment ?? $link->admin_comment,
         ]);
@@ -132,23 +143,53 @@ class AdminLinkController extends Controller
         // 🔥 Hapus cache agar perubahan status/ban langsung berasa
         Cache::forget("link:{$link->code}");
 
-        // 🔔 Kirim notifikasi jika ada komentar admin
-        if ($request->filled('admin_comment')) {
-            $title = $link->is_banned ? 'Link Banned by Admin' : 'Admin Message regarding your link';
-            $type = $link->is_banned ? 'danger' : 'info';
-
+        // 🔔 Send notification to user when link status changes (only for user-owned links)
+        if ($link->user) {
             // 🔥🔥 Fetch Expiry Setting 🔥🔥
             $setting = Setting::where('key', 'notification_settings')->first();
             $expiryDays = $setting ? ($setting->value['expiry_days'] ?? 30) : 30;
             $expiresAt = now()->addDays($expiryDays);
 
-            $link->user->notify(new GeneralNotification(
-                $title,
-                $request->admin_comment,
-                $type,
-                null, // actionUrl bisa diisi link ke detail jika ada
-                $expiresAt // ✅ Expiration Date
-            ));
+            // Link was just BANNED
+            if (!$wasBanned && $isBanning) {
+                $notifMessage = "Your link ({$link->code}) has been blocked by admin.";
+
+                // Add ban reason on new line if provided
+                if ($request->filled('ban_reason')) {
+                    $notifMessage .= "\n\nReason: {$request->ban_reason}";
+                }
+
+                $link->user->notify(new GeneralNotification(
+                    'Link Blocked',
+                    $notifMessage,
+                    'danger',
+                    null,
+                    $expiresAt
+                ));
+            }
+            // Link was just ACTIVATED (unbanned)
+            elseif ($wasBanned && !$isBanning) {
+                $link->user->notify(new GeneralNotification(
+                    'Link Activated',
+                    "Your link ({$link->code}) has been reactivated by admin.",
+                    'success',
+                    null,
+                    $expiresAt
+                ));
+            }
+            // Admin comment added (separate from ban status change)
+            elseif ($request->filled('admin_comment') && !(!$wasBanned && $isBanning)) {
+                $title = $link->is_banned ? 'Admin Message (Link Blocked)' : 'Admin Message';
+                $type = $link->is_banned ? 'warning' : 'info';
+
+                $link->user->notify(new GeneralNotification(
+                    $title,
+                    $request->admin_comment,
+                    $type,
+                    null,
+                    $expiresAt
+                ));
+            }
         }
 
         return $this->successResponse($link, 'Link updated successfully');

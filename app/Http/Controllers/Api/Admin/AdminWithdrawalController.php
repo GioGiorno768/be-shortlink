@@ -25,8 +25,8 @@ class AdminWithdrawalController extends Controller
         $sort = $request->input('sort', 'newest'); // Sort: newest/oldest
         $level = $request->input('level'); // User level filter
 
-        // Mulai Query
-        $query = Payout::with(['user', 'paymentMethod']);
+        // Mulai Query - include processedBy relation for admin name
+        $query = Payout::with(['user', 'paymentMethod', 'processedBy:id,name']);
 
         // 1. Filter Berdasarkan Status
         if ($status && in_array($status, ['pending', 'approved', 'paid', 'rejected'])) {
@@ -110,14 +110,25 @@ class AdminWithdrawalController extends Controller
             // Total Uang yang "ditahan" di pending_balance
             $totalLockedAmount = $payout->amount + $payout->fee;
 
-            // 🔥🔥 LOCKING MECHANISM 🔥🔥
-            // Jika status saat ini APPROVED, pastikan yang memproses adalah admin yang sama
+            // 🔥🔥 RACE CONDITION CHECK 🔥🔥
+            // Check 1: Jika withdrawal sudah BUKAN pending dan ada processed_by dari admin lain
+            // Ini menangani kasus: Admin B coba approve tapi Admin A sudah approve duluan
+            if ($oldStatus !== 'pending' && $payout->processed_by && $payout->processed_by != $request->user()->id) {
+                $processor = User::find($payout->processed_by);
+                $processorName = $processor ? $processor->name : 'Admin lain';
+
+                DB::rollBack();
+                return $this->errorResponse("Penarikan ini sudah diproses oleh {$processorName}. Status saat ini: {$oldStatus}.", 403);
+            }
+
+            // Check 2: Jika status saat ini APPROVED, pastikan yang memproses (paid/reject) adalah admin yang sama
+            // Ini menangani kasus: Admin A approve, lalu Admin B coba pay/reject
             if ($oldStatus === 'approved') {
                 if ($payout->processed_by && $payout->processed_by != $request->user()->id) {
-                    // Ambil nama admin yang mengunci (opsional, butuh relation processedBy di model Payout)
                     $processor = User::find($payout->processed_by);
                     $processorName = $processor ? $processor->name : 'Admin lain';
 
+                    DB::rollBack();
                     return $this->errorResponse("Penarikan ini sedang diproses oleh {$processorName}. Anda tidak dapat mengubah statusnya.", 403);
                 }
             }
@@ -161,7 +172,10 @@ class AdminWithdrawalController extends Controller
                         $referrer = User::find($user->referred_by);
                         if ($referrer) {
                             // 🔥 DYNAMIC REFERRAL PERCENTAGE 🔥
-                            $setting = Setting::where('key', 'referral_percentage')->first();
+                            $setting = Setting::where('key', 'referral_settings')->first();
+                            if (!$setting) {
+                                $setting = Setting::where('key', 'referral_percentage')->first();
+                            }
                             $percentage = $setting ? ($setting->value['percentage'] ?? 10) : 10;
 
                             $commissionAmount = $payout->amount * ($percentage / 100);
@@ -189,7 +203,11 @@ class AdminWithdrawalController extends Controller
             };
 
             $notifMessage = "Your withdrawal request {$payout->transaction_id} has been {$newStatus}.";
-            if ($request->notes) {
+
+            // Add rejection reason on a new line for better visibility
+            if ($newStatus === 'rejected' && $request->notes) {
+                $notifMessage .= "\n\nReason: {$request->notes}";
+            } elseif ($request->notes) {
                 $notifMessage .= " Note: {$request->notes}";
             }
 

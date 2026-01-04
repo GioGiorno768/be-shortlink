@@ -14,6 +14,9 @@ use App\Models\Link;
 use App\Models\User;
 use App\Models\View;
 use App\Models\Setting;
+use App\Models\UserCountryStat;
+use App\Models\UserReferrerStat;
+use App\Models\UserDailyStat;
 use Stevebauman\Location\Facades\Location;
 use Illuminate\Support\Facades\Log;
 use Laravel\Sanctum\PersonalAccessToken;
@@ -135,6 +138,7 @@ class LinkController extends Controller
         $ip = $request->ip();
         if (app()->environment('local') && $ip === '127.0.0.1') {
             $ip = '36.84.69.10';
+            // $ip = '8.8.8.8';
         }
 
         $user = null;
@@ -151,17 +155,41 @@ class LinkController extends Controller
         }
         $userId = $user ? $user->id : null;
 
-        // 🔥 GUEST RATE LIMITER: 3 links per 3 days 🔥
+        // 🔥 GUEST RATE LIMITER: Use dynamic guest_link_limit from settings 🔥
         if (!$user) {
-            $rateKey = 'guest_link_creation:' . $ip;
-            if (RateLimiter::tooManyAttempts($rateKey, 100)) {
-                $seconds = RateLimiter::availableIn($rateKey);
-                if (RateLimiter::tooManyAttempts($rateKey, 100)) {
-                    $seconds = RateLimiter::availableIn($rateKey);
-                    return $this->errorResponse('Guest limit reached (100 links/3 days). Please register to create more.', 429, ['retry_after' => $seconds]);
-                }
+            // Get link settings from cache/database
+            $linkSettings = Cache::remember('link_settings', 300, function () {
+                $setting = Setting::where('key', 'link_settings')->first();
+                return $setting ? $setting->value : [
+                    'min_wait_seconds' => 12,
+                    'expiry_seconds' => 180,
+                    'mass_link_limit' => 20,
+                    'guest_link_limit' => 3,
+                    'guest_link_limit_days' => 1,
+                ];
+            });
+
+            $guestLinkLimit = $linkSettings['guest_link_limit'] ?? 3;
+            $guestLinkLimitDays = $linkSettings['guest_link_limit_days'] ?? 1;
+
+            // If guest_link_limit is 0, guest creation is disabled
+            if ($guestLinkLimit === 0) {
+                return $this->errorResponse('Guest link creation is disabled. Please register to create shortlinks.', 403);
             }
-            RateLimiter::hit($rateKey, 259200); // 3 days = 259200 seconds
+
+            $rateKey = 'guest_link_creation:' . $ip;
+            $rateLimitTTL = $guestLinkLimitDays * 86400; // days * 86400 seconds
+
+            if (RateLimiter::tooManyAttempts($rateKey, $guestLinkLimit)) {
+                $seconds = RateLimiter::availableIn($rateKey);
+                $daysText = $guestLinkLimitDays == 1 ? 'day' : "{$guestLinkLimitDays} days";
+                return $this->errorResponse(
+                    "Guest limit reached ({$guestLinkLimit} links/{$daysText}). Please register to create more.",
+                    429,
+                    ['retry_after' => $seconds]
+                );
+            }
+            RateLimiter::hit($rateKey, $rateLimitTTL);
         }
 
         $tries = 0;
@@ -367,6 +395,7 @@ class LinkController extends Controller
             $ip = $request->ip();
             if (app()->environment('local') && $ip === '127.0.0.1') {
                 $ip = '36.84.69.10';
+                // $ip = '8.8.8.8';
             }
             $userAgent = $request->header('User-Agent');
             $tokenKey = "token:{$code}:" . md5("{$ip}-{$userAgent}");
@@ -444,6 +473,7 @@ class LinkController extends Controller
         $ip = $request->ip();
         if (app()->environment('local') && $ip === '127.0.0.1') {
             $ip = '36.84.69.10';
+            // $ip = '8.8.8.8';
         }
         $userAgent = $request->header('User-Agent');
         $tokenKey = "token:{$code}:" . md5("{$ip}-{$userAgent}");
@@ -503,6 +533,7 @@ class LinkController extends Controller
         $ip = $request->ip();
         if (app()->environment('local') && $ip === '127.0.0.1') {
             $ip = '36.84.69.10';
+            // $ip = '8.8.8.8';
         }
         $userAgent = $request->header('User-Agent');
         $tokenKey = "token:{$code}:" . md5("{$ip}-{$userAgent}");
@@ -562,6 +593,7 @@ class LinkController extends Controller
         $ip = $request->ip();
         if (app()->environment('local') && $ip === '127.0.0.1') {
             $ip = '36.84.69.10';
+            // $ip = '8.8.8.8';
         }
         $userAgent = $request->header('User-Agent');
         $tokenKey = "token:{$code}:" . md5("{$ip}-{$userAgent}");
@@ -619,6 +651,7 @@ class LinkController extends Controller
         $ip = $request->ip();
         if (app()->environment('local') && $ip === '127.0.0.1') {
             $ip = '36.84.69.10';
+            // $ip = '8.8.8.8';
         }
         $userAgent = $request->header('User-Agent');
         $tokenKey = "token:{$code}:" . md5("{$ip}-{$userAgent}");
@@ -728,6 +761,7 @@ class LinkController extends Controller
         $ip = $request->ip();
         if (app()->environment('local') && $ip === '127.0.0.1') {
             $ip = '36.84.69.10';
+            // $ip = '8.8.8.8';
         }
         if (RateLimiter::tooManyAttempts("continue:{$ip}", 3)) {
             return $this->errorResponse('Too many attempts. Try again later.', 429);
@@ -918,6 +952,14 @@ class LinkController extends Controller
                     'total_earnings' => $finalEarned
                 ]);
 
+                // 🔧 4. Update Aggregate Stats (Country & Referrer)
+                // Only for valid views from owned links
+                UserCountryStat::incrementView($linkModel->user_id, $location['code'] ?? 'OTHER');
+                UserReferrerStat::incrementView($linkModel->user_id, $request->headers->get('referer'));
+
+                // 🔧 5. Update Daily Stats (for date filtering)
+                UserDailyStat::incrementStats($linkModel->user_id, $isValidView, $finalEarned);
+
                 // Check level update asynchronously (fire and forget logic essentially, or just check)
                 // Since we didn't load the user with lock, we can just fetch it fresh or use a lightweight check
                 $user = User::find($linkModel->user_id);
@@ -1026,10 +1068,17 @@ class LinkController extends Controller
         $urls = array_filter($urls, function ($value) {
             return !is_null($value) && $value !== '';
         });
-        $urls = array_slice($urls, 0, 20); // Limit 20 links
+
+        // Get limit from settings
+        $linkSettings = Setting::where('key', 'link_settings')->first();
+        $massLinkLimit = $linkSettings ? ($linkSettings->value['mass_link_limit'] ?? 20) : 20;
+        $urls = array_slice($urls, 0, $massLinkLimit);
 
         $results = [];
         $adLevel = $request->input('ad_level', 1);
+
+        // 🔧 Track processed URLs within this batch to avoid duplicates
+        $processedUrls = [];
 
         foreach ($urls as $url) {
             $url = trim($url);
@@ -1038,6 +1087,30 @@ class LinkController extends Controller
                     'original_url' => $url,
                     'error' => 'Invalid URL'
                 ];
+                continue;
+            }
+
+            // 🔧 Check if already processed in this batch
+            if (isset($processedUrls[$url])) {
+                $results[] = $processedUrls[$url];
+                continue;
+            }
+
+            // 🔧 Check if URL already exists for this user
+            $existingLink = Link::where('user_id', $user ? $user->id : null)
+                ->where('original_url', $url)
+                ->first();
+
+            if ($existingLink) {
+                // Reuse existing shortlink
+                $result = [
+                    'original_url' => $url,
+                    'short_url' => url($existingLink->code),
+                    'code' => $existingLink->code,
+                    'reused' => true
+                ];
+                $results[] = $result;
+                $processedUrls[$url] = $result;
                 continue;
             }
 
@@ -1072,11 +1145,13 @@ class LinkController extends Controller
             ];
             Cache::put("link:{$code}", $cachedLink, now()->addHours(24));
 
-            $results[] = [
+            $result = [
                 'original_url' => $url,
                 'short_url' => url($code),
                 'code' => $code
             ];
+            $results[] = $result;
+            $processedUrls[$url] = $result;
         }
 
         return $this->successResponse($results, 'Mass shorten completed');
@@ -1127,5 +1202,22 @@ class LinkController extends Controller
         if (preg_match('/msie|trident/i', $userAgent))
             return 'Internet Explorer';
         return 'Other';
+    }
+
+    // ==============================
+    // 🔧 PUBLIC: Get Link Settings (for mass_link_limit etc)
+    // ==============================
+    public function getLinkSettings()
+    {
+        $setting = Setting::where('key', 'link_settings')->first();
+
+        // Default settings
+        $defaults = [
+            'min_wait_seconds' => 12,
+            'expiry_seconds' => 180,
+            'mass_link_limit' => 20,
+        ];
+
+        return $this->successResponse($setting ? $setting->value : $defaults, 'Link settings retrieved');
     }
 }

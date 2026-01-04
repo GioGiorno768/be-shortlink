@@ -82,7 +82,7 @@ class AdminSettingController extends Controller
     {
         $global = AdRate::where('country', 'GLOBAL')->first();
         $currentRates = $global->rates ?? [];
-        
+
         // Cari level tertinggi saat ini
         $maxLevel = 0;
         foreach (array_keys($currentRates) as $key) {
@@ -90,7 +90,7 @@ class AdminSettingController extends Controller
                 $maxLevel = max($maxLevel, (int)$matches[1]);
             }
         }
-        
+
         $newLevel = $maxLevel + 1;
         $newKey = "level_{$newLevel}";
 
@@ -101,11 +101,11 @@ class AdminSettingController extends Controller
             // Default value logic: copy from previous level or 0
             $prevKey = "level_" . ($newLevel - 1);
             $defaultValue = isset($rates[$prevKey]) ? $rates[$prevKey] : 0.01;
-            
+
             $rates[$newKey] = $defaultValue;
             $rate->update(['rates' => $rates]);
         }
-        
+
         Cache::forget('ad_rates_all');
         return $this->successResponse(['new_level' => $newKey], "Level $newLevel berhasil ditambahkan.");
     }
@@ -129,7 +129,7 @@ class AdminSettingController extends Controller
         // 3. Downgrade Links (Level X -> Level X-1)
         // Cari semua link yang menggunakan level ini
         $affectedLinksCount = Link::where('ad_level', $levelToDelete)->count();
-        
+
         if ($affectedLinksCount > 0) {
             Link::where('ad_level', $levelToDelete)
                 ->update(['ad_level' => $levelToDelete - 1]);
@@ -144,9 +144,9 @@ class AdminSettingController extends Controller
                 $rate->update(['rates' => $rates]);
             }
         }
-        
+
         Cache::forget('ad_rates_all');
-        
+
         return $this->successResponse(null, "Level $key berhasil dihapus. $affectedLinksCount link telah diturunkan ke level " . ($levelToDelete - 1) . ".");
     }
 
@@ -158,13 +158,13 @@ class AdminSettingController extends Controller
         return $this->updateAdRates($request);
     }
 
-     /**
+    /**
      * Ambil settingan minimal penarikan
      */
     public function getWithdrawalSettings()
     {
         $setting = Setting::where('key', 'withdrawal_settings')->first();
-        
+
         // Default jika belum diset di database
         $default = [
             'min_amount' => 1.00,
@@ -203,7 +203,7 @@ class AdminSettingController extends Controller
         return $this->successResponse($data, 'Pengaturan penarikan berhasil diperbarui.');
     }
 
-     /**
+    /**
      * Ambil Settingan Biaya Admin Bank
      */
     public function getBankFees()
@@ -283,39 +283,65 @@ class AdminSettingController extends Controller
         return $this->successResponse($data, 'Registration settings updated successfully.');
     }
     /**
-     * Ambil Settingan Persentase Referral
+     * Ambil Settingan Referral (Commission + Signup Bonus + Anti-Fraud)
      */
     public function getReferralSettings()
     {
-        $setting = Setting::where('key', 'referral_percentage')->first();
+        $setting = Setting::where('key', 'referral_settings')->first();
 
-        // Default: 10%
+        // Default values
         $defaults = [
-            'percentage' => 10,
+            'percentage' => 10,                    // Commission rate (% dari withdrawal referred user)
+            'signup_bonus' => 0,                   // Bonus untuk user baru (dalam USD)
+            'max_accounts_per_ip' => 2,            // Max accounts allowed per IP
+            'fingerprint_check_enabled' => true,   // Enable/disable fingerprint check
+            'ip_limit_enabled' => true,            // Enable/disable IP limit check
         ];
 
-        return $this->successResponse($setting ? $setting->value : $defaults, 'Referral settings retrieved');
+        // Merge dengan existing setting
+        $data = $setting ? array_merge($defaults, $setting->value) : $defaults;
+
+        // Also check legacy referral_percentage for backwards compatibility
+        if (!$setting) {
+            $legacySetting = Setting::where('key', 'referral_percentage')->first();
+            if ($legacySetting) {
+                $data['percentage'] = $legacySetting->value['percentage'] ?? 10;
+            }
+        }
+
+        return $this->successResponse($data, 'Referral settings retrieved');
     }
 
     /**
-     * Update Settingan Persentase Referral
+     * Update Settingan Referral
      */
     public function updateReferralSettings(Request $request)
     {
         $request->validate([
             'percentage' => 'required|numeric|min:0|max:100',
+            'signup_bonus' => 'nullable|numeric|min:0',
+            'max_accounts_per_ip' => 'nullable|integer|min:1|max:100',
+            'fingerprint_check_enabled' => 'nullable|boolean',
+            'ip_limit_enabled' => 'nullable|boolean',
         ]);
 
         $data = [
             'percentage' => $request->percentage,
+            'signup_bonus' => $request->signup_bonus ?? 0,
+            'max_accounts_per_ip' => $request->max_accounts_per_ip ?? 2,
+            'fingerprint_check_enabled' => $request->fingerprint_check_enabled ?? true,
+            'ip_limit_enabled' => $request->ip_limit_enabled ?? true,
         ];
 
         Setting::updateOrCreate(
-            ['key' => 'referral_percentage'],
+            ['key' => 'referral_settings'],
             ['value' => $data]
         );
 
-        return $this->successResponse($data, 'Referral percentage updated successfully.');
+        // Clear cache if exists
+        Cache::forget('referral_settings');
+
+        return $this->successResponse($data, 'Referral settings updated successfully.');
     }
 
     /**
@@ -352,5 +378,107 @@ class AdminSettingController extends Controller
         );
 
         return $this->successResponse($data, 'Notification settings updated successfully.');
+    }
+
+    /**
+     * Ambil Settingan Self-Click
+     */
+    public function getSelfClickSettings()
+    {
+        $setting = Setting::where('key', 'self_click')->first();
+
+        // Default settings
+        $defaults = [
+            'enabled' => true,
+            'cpc_percentage' => 30,
+            'daily_limit' => 1,
+        ];
+
+        // Clear cache when fetching to ensure fresh data
+        Cache::forget('self_click_settings');
+
+        return $this->successResponse($setting ? $setting->value : $defaults, 'Self-click settings retrieved');
+    }
+
+    /**
+     * Update Settingan Self-Click
+     */
+    public function updateSelfClickSettings(Request $request)
+    {
+        $request->validate([
+            'enabled' => 'required|boolean',
+            'cpc_percentage' => 'required|numeric|min:0|max:100',
+            'daily_limit' => 'required|integer|min:1|max:100',
+        ]);
+
+        $data = [
+            'enabled' => $request->enabled,
+            'cpc_percentage' => $request->cpc_percentage,
+            'daily_limit' => $request->daily_limit,
+        ];
+
+        Setting::updateOrCreate(
+            ['key' => 'self_click'],
+            ['value' => $data]
+        );
+
+        // Clear cache so new settings take effect
+        Cache::forget('self_click_settings');
+
+        return $this->successResponse($data, 'Self-click settings updated successfully.');
+    }
+
+    /**
+     * Ambil Settingan Link (Token Duration, dll)
+     */
+    public function getLinkSettings()
+    {
+        $setting = Setting::where('key', 'link_settings')->first();
+
+        // Default settings
+        $defaults = [
+            'min_wait_seconds' => 12,
+            'expiry_seconds' => 180,
+            'mass_link_limit' => 20,
+            'guest_link_limit' => 3, // Max links for guest (not logged in)
+            'guest_link_limit_days' => 1, // Per X days
+        ];
+
+        // Clear cache when fetching to ensure fresh data
+        Cache::forget('link_settings');
+
+        return $this->successResponse($setting ? $setting->value : $defaults, 'Link settings retrieved');
+    }
+
+    /**
+     * Update Settingan Link
+     */
+    public function updateLinkSettings(Request $request)
+    {
+        $request->validate([
+            'min_wait_seconds' => 'required|integer|min:1|max:60',
+            'expiry_seconds' => 'required|integer|min:60|max:600',
+            'mass_link_limit' => 'required|integer|min:1|max:100',
+            'guest_link_limit' => 'required|integer|min:0|max:50',
+            'guest_link_limit_days' => 'required|integer|min:1|max:30',
+        ]);
+
+        $data = [
+            'min_wait_seconds' => $request->min_wait_seconds,
+            'expiry_seconds' => $request->expiry_seconds,
+            'mass_link_limit' => $request->mass_link_limit,
+            'guest_link_limit' => $request->guest_link_limit,
+            'guest_link_limit_days' => $request->guest_link_limit_days,
+        ];
+
+        Setting::updateOrCreate(
+            ['key' => 'link_settings'],
+            ['value' => $data]
+        );
+
+        // Clear cache so new settings take effect
+        Cache::forget('link_settings');
+
+        return $this->successResponse($data, 'Link settings updated successfully.');
     }
 }

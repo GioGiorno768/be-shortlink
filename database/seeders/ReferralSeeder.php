@@ -13,10 +13,13 @@ class ReferralSeeder extends Seeder
 {
     public function run(): void
     {
-        // 1. Ensure referral percentage setting exists
+        // 1. Ensure referral settings exist (new format with signup_bonus)
         Setting::updateOrCreate(
-            ['key' => 'referral_percentage'],
-            ['value' => ['percentage' => 20]] // 20% commission
+            ['key' => 'referral_settings'],
+            ['value' => [
+                'percentage' => 20,      // 20% commission dari withdrawal
+                'signup_bonus' => 0.05,  // $0.05 signup bonus untuk user baru
+            ]]
         );
 
         // 2. Get user with ID 6 as the referrer

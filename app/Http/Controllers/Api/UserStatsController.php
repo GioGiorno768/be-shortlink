@@ -12,8 +12,8 @@ class UserStatsController extends Controller
 {
     /**
      * Get lightweight header stats for user.
-     * Optimized: reads from users table + cached payout sum.
-     * CPM: calculated from users.total_earnings / users.total_valid_views
+     * Balance & CPM: fresh from users table (fast single row query)
+     * Payout: cached for 5 minutes (changes rarely)
      * 
      * Response time: ~10-30ms
      */
@@ -22,34 +22,29 @@ class UserStatsController extends Controller
         $user = $request->user();
         $userId = $user->id;
 
-        // Cache key for user header stats
-        $cacheKey = "user:stats:header:{$userId}";
+        // 🔧 FIX: Always fetch fresh balance & CPM from users table (no cache)
+        // Query is fast (~1ms) since it's just reading a single row by primary key
+        $user->refresh(); // Ensure we have latest data
 
-        // Cache for 2 minutes
-        $stats = Cache::remember($cacheKey, 120, function () use ($user, $userId) {
-            // Balance from users table (instant)
-            $balance = $user->balance ?? 0;
+        $balance = $user->balance ?? 0;
 
-            // CPM from users table (total_earnings / total_valid_views) * 1000
-            $totalViews = $user->total_valid_views ?? 0;
-            $totalEarned = $user->total_earnings ?? 0;
-            $cpm = $totalViews > 0 ? round(($totalEarned / $totalViews) * 1000, 2) : 0;
+        // CPM from users table (total_earnings / total_valid_views) * 1000
+        $totalViews = $user->total_valid_views ?? 0;
+        $totalEarned = $user->total_earnings ?? 0;
+        $cpm = $totalViews > 0 ? round(($totalEarned / $totalViews) * 1000, 2) : 0;
 
-            // Payout sum - cached separately for 5 minutes (changes less frequently)
-            $payout = Cache::remember("user:payout:sum:{$userId}", 300, function () use ($userId) {
-                return Payout::where('user_id', $userId)
-                    ->where('status', 'paid')
-                    ->sum('amount') ?? 0;
-            });
-
-            return [
-                'balance' => (float) $balance,
-                'payout' => (float) $payout,
-                'cpm' => (float) $cpm,
-            ];
+        // Payout sum - cached for 5 minutes (changes less frequently)
+        $payout = Cache::remember("user:payout:sum:{$userId}", 300, function () use ($userId) {
+            return Payout::where('user_id', $userId)
+                ->where('status', 'paid')
+                ->sum('amount') ?? 0;
         });
 
-        return $this->successResponse($stats, 'Header stats retrieved');
+        return $this->successResponse([
+            'balance' => (float) $balance,
+            'payout' => (float) $payout,
+            'cpm' => (float) $cpm,
+        ], 'Header stats retrieved');
     }
 
     /**

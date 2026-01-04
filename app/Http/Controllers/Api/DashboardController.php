@@ -40,10 +40,10 @@ class DashboardController extends Controller
         $avgCpm = $totalViews > 0 ? round(($totalEarnings / $totalViews) * 1000, 2) : 0;
 
         // ====================================
-        // 🔹 TOP LINKS SECTION (Top 10 by Valid Clicks)
+        // 🔹 TOP LINKS SECTION (Top 10 by Earnings)
         // ====================================
         $topLinks = Link::where('user_id', $user->id)
-            ->orderByDesc('valid_views') // 🔥 Sort by Valid Clicks
+            ->orderByDesc('total_earned') // 🔥 Sort by Earnings (highest first)
             ->limit(10) // 🔥 Limit 10
             ->get()
             ->map(function ($link) {

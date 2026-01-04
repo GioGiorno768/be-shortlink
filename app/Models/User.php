@@ -38,6 +38,7 @@ class User extends Authenticatable implements MustVerifyEmail
         'email_verified_at', // <-- TAMBAHKAN INI (untuk membuat user baru)
         'role',
         'is_banned',
+        'ban_reason',        // <-- BAN REASON
         'total_earnings',
         'last_active_at', // <-- TAMBAHKAN INI
         'last_device_fingerprint', // Anti-fraud

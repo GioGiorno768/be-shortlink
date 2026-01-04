@@ -11,6 +11,7 @@ class PaymentMethod extends Model
 
     protected $fillable = [
         'user_id',
+        'template_id',
         'method_type',
         'account_name',
         'account_number',
@@ -20,6 +21,14 @@ class PaymentMethod extends Model
         'is_default',
         // 'verification_token'
     ];
+
+    /**
+     * Get the template this payment method is based on
+     */
+    public function template()
+    {
+        return $this->belongsTo(PaymentMethodTemplate::class, 'template_id');
+    }
 
     public function user()
     {

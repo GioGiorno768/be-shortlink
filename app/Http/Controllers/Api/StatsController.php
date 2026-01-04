@@ -10,6 +10,9 @@ use App\Models\View;
 use App\Models\Payout;
 use App\Models\User;
 use App\Models\Level;
+use App\Models\UserCountryStat;
+use App\Models\UserReferrerStat;
+use App\Models\UserDailyStat;
 use Carbon\Carbon;
 
 class StatsController extends Controller
@@ -19,141 +22,210 @@ class StatsController extends Controller
     /**
      * 🌍 Endpoint Top Countries
      * GET /analytics/top-countries
+     * 🔧 Uses aggregate table for fast lookups
      */
     public function topCountries(Request $request)
     {
         $user = $request->user();
         $limit = $request->query('limit', 7);
 
-        // Ambil Range Tanggal
-        $dateData = $this->getDateRange($request);
+        // ============================================
+        // 🔧 CONFIG: Default Countries yang SELALU tampil
+        // Tinggal tambah/hapus country code di array ini
+        // untuk mengatur negara mana yang tampil sebagai default
+        // ============================================
+        $defaultCountryCodes = [
+            'ID',   // Indonesia
+            'US',   // United States
+            'DE',   // Germany
+            'PH',   // Philippines
+            'MY',   // Malaysia
+            'VN',   // Vietnam
+            'TH',   // Thailand
+            // 'IN', // India (uncomment jika mau tambah)
+            // 'GB', // United Kingdom (uncomment jika mau tambah)
+            // 'SG', // Singapore (uncomment jika mau tambah)
+        ];
 
-        // Base Query
-        $query = View::whereHas('link', fn($q) => $q->where('user_id', $user->id))
-            ->whereBetween('created_at', [$dateData['start']->utc(), $dateData['end']->utc()]);
+        // ============================================
+        // 🏷️ Country code to name mapping
+        // ============================================
+        $countryNames = [
+            // Southeast Asia
+            'ID' => 'Indonesia',
+            'MY' => 'Malaysia',
+            'SG' => 'Singapore',
+            'PH' => 'Philippines',
+            'VN' => 'Vietnam',
+            'TH' => 'Thailand',
+            // South Asia
+            'IN' => 'India',
+            'BD' => 'Bangladesh',
+            'PK' => 'Pakistan',
+            // Americas
+            'US' => 'United States',
+            'CA' => 'Canada',
+            'BR' => 'Brazil',
+            'MX' => 'Mexico',
+            'AR' => 'Argentina',
+            'CO' => 'Colombia',
+            'CL' => 'Chile',
+            'PE' => 'Peru',
+            // Europe
+            'GB' => 'United Kingdom',
+            'DE' => 'Germany',
+            'FR' => 'France',
+            'NL' => 'Netherlands',
+            'SE' => 'Sweden',
+            'NO' => 'Norway',
+            'DK' => 'Denmark',
+            'FI' => 'Finland',
+            'BE' => 'Belgium',
+            'AT' => 'Austria',
+            'CH' => 'Switzerland',
+            'IE' => 'Ireland',
+            // Others
+            'JP' => 'Japan',
+            'AU' => 'Australia',
+            'NZ' => 'New Zealand',
+            'RU' => 'Russia',
+            'TR' => 'Turkey',
+            'EG' => 'Egypt',
+            'ZA' => 'South Africa',
+            'KE' => 'Kenya',
+            'NG' => 'Nigeria',
+            'OTHER' => 'Other Countries',
+        ];
 
-        // Hitung Total Views di periode ini untuk kalkulasi persentase
-        $totalViews = (clone $query)->count();
+        // ============================================
+        // 📊 Fetch user data dari aggregate table
+        // ============================================
+        $stats = UserCountryStat::where('user_id', $user->id)->get()->keyBy('country_code');
+        $totalViews = $stats->sum('view_count');
 
-        if ($totalViews === 0) {
-            return $this->successResponse([
-                'range' => $dateData['range'],
-                'from_date' => $dateData['start']->format('Y-m-d'),
-                'to_date' => $dateData['end']->format('Y-m-d'),
-                'total_views' => 0,
-                'items' => []
-            ], 'Top countries retrieved (empty)');
+        // ============================================
+        // 🔀 Merge real data + defaults
+        // ============================================
+        $mergedItems = collect();
+
+        // 1. Add all countries from real data
+        foreach ($stats as $code => $stat) {
+            $mergedItems->put($code, [
+                'country_code' => $code,
+                'country_name' => $countryNames[$code] ?? $code,
+                'views' => (int) $stat->view_count,
+                'percentage' => $totalViews > 0 ? round(($stat->view_count / $totalViews) * 100, 1) : 0,
+            ]);
         }
 
-        // Group by Country
-        $countries = $query->select('country', DB::raw('count(*) as total'))
-            ->groupBy('country')
-            ->orderByDesc('total')
-            ->limit($limit)
-            ->get();
-
-        $items = $countries->map(function ($item) use ($totalViews) {
-            $code = $item->country ?: 'Unknown';
-
-            // --- REVISI BAGIAN INI ---
-            $name = $code;
-            // Gunakan fungsi intl HANYA JIKA tersedia
-            if ($code !== 'Unknown' && function_exists('locale_get_display_region')) {
-                $name = locale_get_display_region('en-' . $code, 'en');
+        // 2. Fill with defaults that don't have data yet
+        foreach ($defaultCountryCodes as $code) {
+            if (!$mergedItems->has($code)) {
+                $mergedItems->put($code, [
+                    'country_code' => $code,
+                    'country_name' => $countryNames[$code] ?? $code,
+                    'views' => 0,
+                    'percentage' => 0,
+                ]);
             }
+        }
 
-            return [
-                'country_code' => $code,
-                'country_name' => $name ?: ($item->country ?? 'Unknown'),
-                'views' => $item->total,
-                'percentage' => round(($item->total / $totalViews) * 100, 1),
-            ];
-        });
+        // 3. Sort by views descending, then take limit
+        $sortedItems = $mergedItems->sortByDesc('views')->values()->take($limit);
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'range' => $dateData['range'],
-                'from_date' => $dateData['start']->format('Y-m-d'),
-                'to_date' => $dateData['end']->format('Y-m-d'),
-                'total_views' => $totalViews,
-                'items' => $items
-            ]
-        ]);
+        return $this->successResponse([
+            'total_views' => (int) $totalViews,
+            'items' => $sortedItems
+        ], 'Top countries retrieved');
     }
 
     /**
      * 🔗 Endpoint Top Referrers
      * GET /analytics/top-referrers
+     * 🔧 Uses aggregate table for fast lookups
      */
     public function topReferrers(Request $request)
     {
         $user = $request->user();
-        $limit = $request->query('limit', 6);
+        $limit = $request->query('limit', 8);
 
-        // Ambil Range Tanggal
-        $dateData = $this->getDateRange($request);
+        // ============================================
+        // 🔧 CONFIG: Default Referrers yang SELALU tampil
+        // Tinggal tambah/hapus key di array ini untuk mengatur
+        // referrer mana yang tampil sebagai default
+        // ============================================
+        $defaultReferrerKeys = [
+            'direct',       // Direct / Email / SMS
+            'google',       // Google Search
+            'facebook',     // Facebook
+            'instagram',    // Instagram
+            'whatsapp',     // WhatsApp
+            'youtube',      // YouTube
+            'tiktok',       // TikTok
+            'telegram',     // Telegram
+            // 'twitter_x', // Twitter / X (uncomment jika mau tambah)
+            // 'other',     // Other (uncomment jika mau tambah)
+        ];
 
-        // Base Query
-        $query = View::whereHas('link', fn($q) => $q->where('user_id', $user->id))
-            ->whereBetween('created_at', [$dateData['start']->utc(), $dateData['end']->utc()]);
+        // ============================================
+        // 🏷️ Label mapping untuk setiap referrer key
+        // ============================================
+        $referrerLabels = [
+            'direct'    => 'Direct / Email / SMS',
+            'google'    => 'Google',
+            'facebook'  => 'Facebook',
+            'instagram' => 'Instagram',
+            'whatsapp'  => 'WhatsApp',
+            'youtube'   => 'YouTube',
+            'tiktok'    => 'TikTok',
+            'telegram'  => 'Telegram',
+            'twitter_x' => 'Twitter / X',
+            'linkedin'  => 'LinkedIn',
+            'pinterest' => 'Pinterest',
+            'reddit'    => 'Reddit',
+            'other'     => 'Other',
+        ];
 
-        $totalViews = (clone $query)->count();
+        // ============================================
+        // 📊 Fetch user data dari aggregate table
+        // ============================================
+        $stats = UserReferrerStat::where('user_id', $user->id)->get()->keyBy('referrer_key');
+        $totalViews = $stats->sum('view_count');
 
-        if ($totalViews === 0) {
-            return $this->successResponse([
-                'range' => $dateData['range'],
-                'from_date' => $dateData['start']->format('Y-m-d'),
-                'to_date' => $dateData['end']->format('Y-m-d'),
-                'total_views' => 0,
-                'items' => []
-            ], 'Top referrers retrieved (empty)');
+        // ============================================
+        // 🔀 Merge real data + defaults
+        // ============================================
+        $mergedItems = collect();
+
+        // 1. Add all referrers from real data
+        foreach ($stats as $key => $stat) {
+            $mergedItems->put($key, [
+                'referrer_key' => $key,
+                'referrer_label' => $referrerLabels[$key] ?? UserReferrerStat::getLabel($key),
+                'views' => (int) $stat->view_count,
+                'percentage' => $totalViews > 0 ? round(($stat->view_count / $totalViews) * 100, 1) : 0,
+            ]);
         }
 
-        // Ambil raw referrer untuk diproses (Grouping SQL bisa kurang akurat karena subdomain)
-        // Kita ambil top raw referrers dulu untuk efisiensi, baru di-merge di PHP
-        $rawReferrers = $query->select('referer', DB::raw('count(*) as total'))
-            ->groupBy('referer')
-            ->orderByDesc('total')
-            ->limit(100) // Ambil lebih banyak dari limit untuk diproses grouping-nya
-            ->get();
-
-        // Proses Grouping Domain (Merge subdomain, misal: m.facebook.com & facebook.com -> Facebook)
-        $grouped = collect();
-
-        foreach ($rawReferrers as $row) {
-            $parsed = $this->parseReferrer($row->referer);
-            $key = $parsed['key'];
-
-            if (!$grouped->has($key)) {
-                $grouped->put($key, [
+        // 2. Fill with defaults that don't have data yet
+        foreach ($defaultReferrerKeys as $key) {
+            if (!$mergedItems->has($key)) {
+                $mergedItems->put($key, [
                     'referrer_key' => $key,
-                    'referrer_label' => $parsed['label'],
-                    'views' => 0
+                    'referrer_label' => $referrerLabels[$key] ?? ucfirst($key),
+                    'views' => 0,
+                    'percentage' => 0,
                 ]);
             }
-
-            $data = $grouped->get($key);
-            $data['views'] += $row->total;
-            $grouped->put($key, $data);
         }
 
-        // Sort dan Limit Hasil Akhir
-        $items = $grouped->sortByDesc('views')->take($limit)->values()->map(function ($item) use ($totalViews) {
-            $item['percentage'] = round(($item['views'] / $totalViews) * 100, 1);
-            return $item;
-        });
+        // 3. Sort by views descending, then take limit
+        $sortedItems = $mergedItems->sortByDesc('views')->values()->take($limit);
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'range' => $dateData['range'],
-                'from_date' => $dateData['start']->format('Y-m-d'),
-                'to_date' => $dateData['end']->format('Y-m-d'),
-                'total_views' => $totalViews,
-                'items' => $items
-            ]
-        ]);
+        return $this->successResponse([
+            'total_views' => (int) $totalViews,
+            'items' => $sortedItems
+        ], 'Top referrers retrieved');
     }
 
     // Helper: Parse Referrer URL to Clean Label
@@ -188,18 +260,26 @@ class StatsController extends Controller
     /**
      * GET /dashboard/summary/earnings
      * Cached for 2 minutes per user+range
+     * 🔧 FIX: Now properly filters by date range
      */
     public function getEarnings(Request $request)
     {
         $user = $request->user();
         $dateData = $this->getDateRange($request);
-        // Cache key includes range for future date filtering support
         $cacheKey = "stats:earnings:{$user->id}:{$dateData['range']}";
 
-        // 🔧 FIX: Always use user.total_earnings since views table may be empty
-        // Date-based filtering is not currently reliable, so we use lifetime totals
-        $totalEarnings = Cache::remember($cacheKey, 120, function () use ($user) {
-            return $user->total_earnings ?? 0;
+        $totalEarnings = Cache::remember($cacheKey, 120, function () use ($user, $dateData) {
+            // For lifetime, use user's total (faster)
+            if ($dateData['range'] === 'lifetime') {
+                return $user->total_earnings ?? 0;
+            }
+
+            // 🔧 FIX: Query from aggregate table instead of views
+            return UserDailyStat::getEarningsBetween(
+                $user->id,
+                $dateData['start'],
+                $dateData['end']
+            );
         });
 
         return $this->successResponse([
@@ -215,18 +295,26 @@ class StatsController extends Controller
      * GET /dashboard/summary/clicks
      * Mengembalikan VALID CLICKS sesuai request user
      * Cached for 2 minutes per user+range
+     * 🔧 FIX: Now properly filters by date range
      */
     public function getClicks(Request $request)
     {
         $user = $request->user();
         $dateData = $this->getDateRange($request);
-        // Cache key includes range for future date filtering support
         $cacheKey = "stats:clicks:{$user->id}:{$dateData['range']}";
 
-        // 🔧 FIX: Always use user.total_valid_views since views table may be empty
-        // Date-based filtering is not currently reliable, so we use lifetime totals
-        $totalClicks = Cache::remember($cacheKey, 120, function () use ($user) {
-            return $user->total_valid_views ?? 0;
+        $totalClicks = Cache::remember($cacheKey, 120, function () use ($user, $dateData) {
+            // For lifetime, use user's total (faster)
+            if ($dateData['range'] === 'lifetime') {
+                return $user->total_valid_views ?? 0;
+            }
+
+            // 🔧 FIX: Query from aggregate table instead of views
+            return UserDailyStat::getValidViewsBetween(
+                $user->id,
+                $dateData['start'],
+                $dateData['end']
+            );
         });
 
         return $this->successResponse([
@@ -269,7 +357,7 @@ class StatsController extends Controller
      * GET /dashboard/summary/cpm
      * Menampilkan Rata-rata CPM (Cost Per Mille)
      * Rumus: (Total Earnings / Total Valid Views) * 1000
-     * Uses users table for accurate all-time CPM
+     * 🔧 FIX: Now properly filters by date range
      */
     public function getAverageCpm(Request $request)
     {
@@ -277,10 +365,23 @@ class StatsController extends Controller
         $dateData = $this->getDateRange($request);
         $cacheKey = "stats:cpm:{$user->id}:{$dateData['range']}";
 
-        $cpm = Cache::remember($cacheKey, 120, function () use ($user) {
-            // CPM from users table (total_earnings / total_valid_views) * 1000
-            $totalViews = $user->total_valid_views ?? 0;
-            $totalEarnings = $user->total_earnings ?? 0;
+        $cpm = Cache::remember($cacheKey, 120, function () use ($user, $dateData) {
+            // For lifetime, use user's totals (faster)
+            if ($dateData['range'] === 'lifetime') {
+                $totalViews = $user->total_valid_views ?? 0;
+                $totalEarnings = $user->total_earnings ?? 0;
+                return $totalViews > 0 ? ($totalEarnings / $totalViews) * 1000 : 0;
+            }
+
+            // 🔧 FIX: Query from aggregate table instead of views
+            $stats = UserDailyStat::getStatsBetween(
+                $user->id,
+                $dateData['start'],
+                $dateData['end']
+            );
+
+            $totalEarnings = $stats['earnings'];
+            $totalViews = $stats['valid_views'];
 
             return $totalViews > 0 ? ($totalEarnings / $totalViews) * 1000 : 0;
         });
@@ -360,18 +461,11 @@ class StatsController extends Controller
 
             $data = $monthlyData->get($monthKey);
 
-            // 🔧 FIX: For current month, ALWAYS use users table for accurate data
-            // Views table may be incomplete due to FULL_REDIS_MODE
-            if ($monthKey === $currentMonthKey) {
-                $monthlyEarnings = (float) $user->total_earnings;
-                $validClicks = (int) $user->total_valid_views;
-                $totalViews = (int) $user->total_views;
-            } else {
-                // Historical months: use views table data
-                $monthlyEarnings = $data ? (float)$data->earnings : 0;
-                $validClicks = $data ? (int)$data->valid_clicks : 0;
-                $totalViews = $data ? (int)$data->total_views : 0;
-            }
+            // 🔧 FIX: Use views table data for ALL months consistently
+            // Previous bug: current month was using lifetime totals instead of monthly
+            $monthlyEarnings = $data ? (float)$data->earnings : 0;
+            $validClicks = $data ? (int)$data->valid_clicks : 0;
+            $totalViews = $data ? (int)$data->total_views : 0;
 
             // Hitung CPM Bulan ini
             $cpm = $totalViews > 0 ? ($monthlyEarnings / $totalViews) * 1000 : 0;
@@ -408,7 +502,7 @@ class StatsController extends Controller
 
     /**
      * GET /dashboard/analytics
-     * 🔧 Fixed: Use links table instead of empty views table
+     * 🔧 Fixed: Use user_daily_stats table for accurate chart data
      */
     public function analytics(Request $request)
     {
@@ -427,16 +521,14 @@ class StatsController extends Controller
         $end = $dateData['end'];
         $timezone = $dateData['timezone'];
 
-        // 🔧 FIX: Query links table instead of views table
-        // Links table has: views, valid_views, total_earned, created_at
-        $links = \App\Models\Link::where('user_id', $user->id)
-            ->whereBetween('created_at', [$start->copy()->utc(), $end->copy()->utc()])
-            ->select(['id', 'views', 'valid_views', 'total_earned', 'created_at'])
+        // 🔧 FIX: Query from daily stats aggregate table
+        $dailyStats = UserDailyStat::where('user_id', $user->id)
+            ->whereBetween('date', [$start->toDateString(), $end->toDateString()])
             ->get();
 
-        // Group by date
-        $groupedLinks = $links->groupBy(function ($item) use ($groupBy, $timezone) {
-            $date = Carbon::parse($item->created_at)->setTimezone($timezone);
+        // Group by date/week/month
+        $groupedStats = $dailyStats->groupBy(function ($item) use ($groupBy, $timezone) {
+            $date = Carbon::parse($item->date)->setTimezone($timezone);
             if ($groupBy === 'month') return $date->format('Y-m');
             elseif ($groupBy === 'week') return $date->format('o-W');
             else return $date->format('Y-m-d');
@@ -461,16 +553,16 @@ class StatsController extends Controller
                 $nextStep = fn($c) => $c->addDay();
             }
 
-            $groupItems = $groupedLinks->get($key);
+            $groupItems = $groupedStats->get($key);
 
             $value = 0;
             if ($groupItems) {
                 if ($metric === 'earnings') {
-                    $value = (float) $groupItems->sum('total_earned');
+                    $value = (float) $groupItems->sum('earnings');
                 } elseif ($metric === 'valid_clicks') {
                     $value = (int) $groupItems->sum('valid_views');
                 } else {
-                    // clicks = valid views only (to avoid user confusion)
+                    // clicks = valid views
                     $value = (int) $groupItems->sum('valid_views');
                 }
             }

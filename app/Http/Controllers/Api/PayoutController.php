@@ -149,7 +149,7 @@ class PayoutController extends Controller
             ->sum('amount');
 
         $query = Payout::where('user_id', $user->id)
-            ->with('paymentMethod');
+            ->with(['paymentMethod.template:id,currency']);
 
         // Filter by payment method
         if ($method && $method !== 'all') {

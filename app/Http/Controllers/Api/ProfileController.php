@@ -21,12 +21,19 @@ class ProfileController extends Controller
             'password' => ['required', 'confirmed', Password::defaults()],
         ];
 
+        $messages = [
+            'password.required' => 'New password is required.',
+            'password.confirmed' => 'Password confirmation does not match.',
+            'current_password.required' => 'Current password is required.',
+            'current_password.current_password' => 'The current password is incorrect.',
+        ];
+
         // Hanya validasi current_password jika user punya password
         if (!is_null($user->password)) {
             $rules['current_password'] = ['required', 'current_password'];
         }
 
-        $validated = $request->validate($rules);
+        $validated = $request->validate($rules, $messages);
 
         $user->update([
             'password' => Hash::make($validated['password']),

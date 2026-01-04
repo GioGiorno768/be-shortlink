@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\GlobalNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 
@@ -13,36 +14,83 @@ class NotificationController extends Controller
      * 
      * Query params:
      * - category: filter by category (system, payment, link, account, event)
+     * 
+     * Response includes:
+     * - pinned: Global notifications (visible to all users)
+     * - notifications: Personal notifications for this user
      */
     public function index(Request $request)
     {
         $userId = $request->user()->id;
         $category = $request->query('category');
 
+        // Helper function to map global notification to response format
+        $mapGlobalNotif = function ($notif) {
+            return [
+                'id' => 'global_' . $notif->id,
+                'type' => 'App\\Notifications\\GlobalBroadcast',
+                'data' => [
+                    'title' => $notif->title,
+                    'message' => $notif->body,
+                    'body' => $notif->body,
+                    'type' => $notif->type,
+                    'category' => 'system',
+                    'is_global' => true,
+                ],
+                'read_at' => null,
+                'created_at' => $notif->created_at,
+            ];
+        };
+
+        // Get pinned global notifications (shown at top in special section)
+        $pinnedNotifications = Cache::remember('global_notifications_pinned', 300, function () use ($mapGlobalNotif) {
+            return GlobalNotification::where('is_pinned', true)
+                ->orderBy('created_at', 'desc')
+                ->limit(10)
+                ->get()
+                ->map($mapGlobalNotif);
+        });
+
+        // Get unpinned global notifications (shown in regular list)
+        $unpinnedGlobalNotifications = Cache::remember('global_notifications_unpinned', 300, function () use ($mapGlobalNotif) {
+            return GlobalNotification::where('is_pinned', false)
+                ->orderBy('created_at', 'desc')
+                ->limit(20)
+                ->get()
+                ->map($mapGlobalNotif);
+        });
+
         // Cache key based on user + category filter
         $cacheKey = "notifications:{$userId}:" . ($category ?? 'all');
 
-        // Try to get from cache first (1 minute TTL)
-        $notifications = Cache::remember($cacheKey, 60, function () use ($request, $category) {
+        // Get personal notifications
+        $personalNotifications = Cache::remember($cacheKey, 60, function () use ($request, $category) {
             $query = $request->user()
                 ->notifications()
-                ->select(['id', 'type', 'data', 'read_at', 'created_at']) // Only needed columns
+                ->select(['id', 'type', 'data', 'read_at', 'created_at'])
                 ->where(function ($q) {
-                    // Tampilkan jika expires_at NULL (permanen) ATAU expires_at > sekarang
                     $q->whereNull('data->expires_at')
                         ->orWhere('data->expires_at', '>', now());
                 });
 
-            // Filter by category if provided (not "all")
             if ($category && $category !== 'all') {
                 $query->where('data->category', $category);
             }
 
-            // Limit to 50 most recent notifications (no pagination needed for dropdown)
             return $query->latest()->limit(50)->get();
         });
 
-        return $this->successResponse($notifications, 'Notifications retrieved');
+        // Merge unpinned global notifications with personal notifications
+        // They'll appear in chronological order
+        $mergedNotifications = collect($unpinnedGlobalNotifications)
+            ->merge($personalNotifications)
+            ->sortByDesc('created_at')
+            ->values();
+
+        return $this->successResponse([
+            'pinned' => $pinnedNotifications,
+            'notifications' => $mergedNotifications,
+        ], 'Notifications retrieved');
     }
 
     /**

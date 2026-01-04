@@ -35,6 +35,10 @@ use App\Http\Controllers\Api\LoginHistoryController;
 use App\Http\Controllers\Api\UserLevelController;
 use App\Http\Controllers\Api\AdLevelController;
 use App\Http\Controllers\Api\Admin\AdminAdLevelController;
+use App\Http\Controllers\Api\Admin\GlobalFeatureController;
+use App\Http\Controllers\Api\Admin\AdminCpcRateController;
+use App\Http\Controllers\Api\Admin\GlobalNotificationController;
+use App\Http\Controllers\Api\EmailVerificationController;
 
 
 
@@ -67,6 +71,17 @@ Route::post('/logout', [AuthenticatedSessionController::class, 'destroy'])
     ->middleware('auth:sanctum')
     ->name('logout');
 
+// 📧 Email Verification (Custom - for frontend integration)
+Route::post('/email/verify', [EmailVerificationController::class, 'verify'])
+    ->middleware('throttle:6,1')
+    ->name('email.verify.custom');
+
+Route::post('/email/resend', [EmailVerificationController::class, 'resend'])
+    ->middleware(['auth:sanctum', 'throttle:3,1']);
+
+Route::get('/email/status', [EmailVerificationController::class, 'status'])
+    ->middleware('auth:sanctum');
+
 
 
 Route::post('/auth/google/callback', [SocialiteController::class, 'handleGoogleCallback']);
@@ -89,6 +104,8 @@ Route::post('/report', [ReportController::class, 'store']);
 
 // Public referral info (no auth required)
 Route::get('/referral/info', [ReferralController::class, 'getReferrerInfo']);
+Route::post('/referral/check-eligibility', [ReferralController::class, 'checkEligibility'])
+    ->middleware('throttle:10,1');
 
 // -------------------- AUTH PROTECTED (Only Logged In) --------------------
 Route::middleware(['auth:sanctum', 'is_banned'])->group(function () {
@@ -105,6 +122,9 @@ Route::middleware(['auth:sanctum', 'is_banned'])->group(function () {
     // Ad Level Configs (public read for ads-info page + dropdown)
     Route::get('/ad-levels', [AdLevelController::class, 'index']);
 
+    // 🔧 Link Settings (public read for mass_link_limit)
+    Route::get('/settings/link', [LinkController::class, 'getLinkSettings']);
+
     // ✅ Get Current User Profile (for sidebar)
     Route::get('/user/me', function (\Illuminate\Http\Request $request) {
         $user = $request->user();
@@ -120,40 +140,6 @@ Route::middleware(['auth:sanctum', 'is_banned'])->group(function () {
         ]);
     });
 
-    // Change user password
-    Route::put('/user/password', function (Request $request) {
-        $user = $request->user();
-
-        $validated = $request->validate([
-            'current_password' => 'required|string',
-            'new_password' => 'required|string|min:8|confirmed',
-        ]);
-
-        // Check if user has a password (OAuth users don't)
-        if (!$user->password) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Kamu login dengan Google. Tidak bisa ganti password.',
-            ], 400);
-        }
-
-        // Verify current password
-        if (!Hash::check($validated['current_password'], $user->password)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Password saat ini salah.',
-            ], 400);
-        }
-
-        // Update password
-        $user->update(['password' => Hash::make($validated['new_password'])]);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Password berhasil diubah!',
-        ]);
-    });
-
 
     // Statistik & kontrol link (hanya user)
     Route::get('/dashboard/overview', [DashboardController::class, 'overview']);
@@ -166,6 +152,8 @@ Route::middleware(['auth:sanctum', 'is_banned'])->group(function () {
     Route::get('/dashboard/summary/cpm', [StatsController::class, 'getAverageCpm']);
     Route::get('/dashboard/analytics', [StatsController::class, 'analytics']);
     Route::get('/analytics/monthly-performance', [StatsController::class, 'monthlyPerformance']);
+    Route::get('/analytics/top-countries', [StatsController::class, 'topCountries']);
+    Route::get('/analytics/top-referrers', [StatsController::class, 'topReferrers']);
 
 
     // Payment Methods
@@ -249,16 +237,50 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::get('/settings/notification', [AdminSettingController::class, 'getNotificationSettings']);
     Route::put('/settings/notification', [AdminSettingController::class, 'updateNotificationSettings']);
 
+    // Settings: Self-Click (BARU ✅)
+    Route::get('/settings/self-click', [AdminSettingController::class, 'getSelfClickSettings']);
+    Route::put('/settings/self-click', [AdminSettingController::class, 'updateSelfClickSettings']);
+
+    // Settings: Link (Token Duration)
+    Route::get('/settings/link', [AdminSettingController::class, 'getLinkSettings']);
+    Route::put('/settings/link', [AdminSettingController::class, 'updateLinkSettings']);
+
     // Report Abuse
     Route::get('/reports', [AdminReportController::class, 'index']);
+    Route::get('/reports/stats', [AdminReportController::class, 'stats']);
+    Route::patch('/reports/{id}/resolve', [AdminReportController::class, 'resolve']);
+    Route::patch('/reports/{id}/ignore', [AdminReportController::class, 'ignore']);
+
+    // Global Notifications (BARU ✅)
+    Route::get('/global-notifications', [GlobalNotificationController::class, 'index']);
+    Route::post('/global-notifications', [GlobalNotificationController::class, 'store']);
+    Route::delete('/global-notifications/{id}', [GlobalNotificationController::class, 'destroy']);
+    Route::patch('/global-notifications/{id}/pin', [GlobalNotificationController::class, 'togglePin']);
+    Route::patch('/reports/{id}/block-link', [AdminReportController::class, 'blockLink']);
     Route::delete('/reports/{id}', [AdminReportController::class, 'destroy']);
 
     // Level Management (User Progression Levels)
     Route::get('/levels', [AdminLevelController::class, 'index']);
-    Route::put('/levels/{id}', [AdminLevelController::class, 'update']);
+    Route::get('/levels/stats', [AdminLevelController::class, 'stats']);
+    Route::post('/levels', [AdminLevelController::class, 'store']);
+    Route::get('/levels/{slug}', [AdminLevelController::class, 'show']);
+    Route::put('/levels/{slug}', [AdminLevelController::class, 'update']);
+    Route::delete('/levels/{slug}', [AdminLevelController::class, 'destroy']);
 
     // Ad Level Configs CRUD
     Route::apiResource('ad-levels', AdminAdLevelController::class);
+    Route::patch('ad-levels/{id}/toggle', [AdminAdLevelController::class, 'toggleEnabled']);
+    Route::post('ad-levels/{id}/set-default', [AdminAdLevelController::class, 'setDefault']);
+    Route::post('ad-levels/{id}/set-recommended', [AdminAdLevelController::class, 'setRecommended']);
+
+    // Global Features CRUD
+    Route::apiResource('global-features', GlobalFeatureController::class);
+
+    // CPC Rates Management
+    Route::get('cpc-rates', [AdminCpcRateController::class, 'index']);
+    Route::post('cpc-rates', [AdminCpcRateController::class, 'store']);
+    Route::post('cpc-rates/country', [AdminCpcRateController::class, 'addCountry']);
+    Route::delete('cpc-rates/country/{country}', [AdminCpcRateController::class, 'removeCountry']);
 
     Route::post('/notify', function (Request $request) {
         // Validasi Input
@@ -310,6 +332,8 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
 
     // User Management
     Route::prefix('users')->group(function () {
+        Route::get('/stats', [\App\Http\Controllers\Api\Admin\AdminUserController::class, 'stats']);
+        Route::post('/notify', [\App\Http\Controllers\Api\Admin\AdminUserController::class, 'notify']);
         Route::get('/', [\App\Http\Controllers\Api\Admin\AdminUserController::class, 'index']);
         Route::get('/{id}', [\App\Http\Controllers\Api\Admin\AdminUserController::class, 'show']);
         Route::put('/{id}', [\App\Http\Controllers\Api\Admin\AdminUserController::class, 'update']);
@@ -322,11 +346,38 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
 });
 
 Route::middleware(['auth:sanctum', 'super_admin'])->prefix('super-admin')->group(function () {
+    // Admin Management
     Route::get('/admins', [\App\Http\Controllers\Api\SuperAdmin\SuperAdminController::class, 'index']);
+    Route::get('/admins/stats', [\App\Http\Controllers\Api\SuperAdmin\SuperAdminController::class, 'stats']);
     Route::post('/admins', [\App\Http\Controllers\Api\SuperAdmin\SuperAdminController::class, 'store']);
     Route::put('/admins/{id}', [\App\Http\Controllers\Api\SuperAdmin\SuperAdminController::class, 'update']);
+    Route::patch('/admins/{id}/toggle-status', [\App\Http\Controllers\Api\SuperAdmin\SuperAdminController::class, 'toggleStatus']);
     Route::delete('/admins/{id}', [\App\Http\Controllers\Api\SuperAdmin\SuperAdminController::class, 'destroy']);
 
     // ✅ Withdrawal Logs
     Route::get('/withdrawal-logs', [\App\Http\Controllers\Api\SuperAdmin\SuperAdminController::class, 'getWithdrawalLogs']);
+
+    // ✅ Payment Method Templates Management
+    Route::prefix('payment-templates')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Api\SuperAdmin\PaymentMethodTemplateController::class, 'index']);
+        Route::post('/', [\App\Http\Controllers\Api\SuperAdmin\PaymentMethodTemplateController::class, 'store']);
+        Route::put('/{template}', [\App\Http\Controllers\Api\SuperAdmin\PaymentMethodTemplateController::class, 'update']);
+        Route::delete('/{template}', [\App\Http\Controllers\Api\SuperAdmin\PaymentMethodTemplateController::class, 'destroy']);
+        Route::patch('/{template}/toggle', [\App\Http\Controllers\Api\SuperAdmin\PaymentMethodTemplateController::class, 'toggleActive']);
+        Route::post('/reorder', [\App\Http\Controllers\Api\SuperAdmin\PaymentMethodTemplateController::class, 'reorder']);
+    });
+
+    // ✅ General Settings Management
+    Route::prefix('settings')->group(function () {
+        Route::get('/general', [\App\Http\Controllers\Api\SuperAdmin\GeneralSettingsController::class, 'getSettings']);
+        Route::put('/general', [\App\Http\Controllers\Api\SuperAdmin\GeneralSettingsController::class, 'updateSettings']);
+        Route::post('/force-logout', [\App\Http\Controllers\Api\SuperAdmin\GeneralSettingsController::class, 'forceLogout']);
+        Route::post('/cleanup', [\App\Http\Controllers\Api\SuperAdmin\GeneralSettingsController::class, 'runCleanup']);
+    });
 });
+
+// ✅ Public API: Get active payment method templates (for user dropdown)
+Route::middleware('auth:sanctum')->get('/payment-templates', [\App\Http\Controllers\Api\SuperAdmin\PaymentMethodTemplateController::class, 'getActive']);
+
+// ✅ Public API: Get access settings (for landing page - no auth)
+Route::get('/settings/access', [\App\Http\Controllers\Api\SuperAdmin\GeneralSettingsController::class, 'getAccessSettings']);

@@ -15,13 +15,23 @@ class AdLevelConfig extends Model
         'color_theme',
         'revenue_share',
         'is_popular',
+        'is_enabled',
+        'is_default',
+        'is_recommended',
         'features',
+        'enabled_features',
+        'feature_values',
         'display_order',
     ];
 
     protected $casts = [
         'features' => 'array',
+        'enabled_features' => 'array',
+        'feature_values' => 'array',
         'is_popular' => 'boolean',
+        'is_enabled' => 'boolean',
+        'is_default' => 'boolean',
+        'is_recommended' => 'boolean',
         'revenue_share' => 'integer',
         'display_order' => 'integer',
     ];

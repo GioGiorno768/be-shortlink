@@ -16,6 +16,12 @@ class LinkReport extends Model
         'email',
         'details',
         'ip_address',
+        'status',
+        'resolved_at',
+    ];
+
+    protected $casts = [
+        'resolved_at' => 'datetime',
     ];
 
     /**
@@ -24,5 +30,21 @@ class LinkReport extends Model
     public function link()
     {
         return $this->belongsTo(Link::class);
+    }
+
+    /**
+     * Scope: pending reports
+     */
+    public function scopePending($query)
+    {
+        return $query->where('status', 'pending');
+    }
+
+    /**
+     * Scope: resolved reports
+     */
+    public function scopeResolved($query)
+    {
+        return $query->whereIn('status', ['resolved', 'ignored']);
     }
 }
