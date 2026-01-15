@@ -62,19 +62,53 @@ class UserLevelController extends Controller
             $progressPercent = 100;
         }
 
-        // 6. Format card data (user-specific)
+        // 6. Find which level first unlocks each feature (for UI display)
+        $unlockRequirements = [
+            "ad_level_3" => null,
+            "ad_level_4" => null,
+            "top_countries" => null,
+            "top_referrers" => null,
+        ];
+
+        foreach ($levels as $level) {
+            if ($unlockRequirements["ad_level_3"] === null && $level->unlock_ad_level_3) {
+                $unlockRequirements["ad_level_3"] = $level->name;
+            }
+            if ($unlockRequirements["ad_level_4"] === null && $level->unlock_ad_level_4) {
+                $unlockRequirements["ad_level_4"] = $level->name;
+            }
+            if ($unlockRequirements["top_countries"] === null && $level->unlock_top_countries) {
+                $unlockRequirements["top_countries"] = $level->name;
+            }
+            if ($unlockRequirements["top_referrers"] === null && $level->unlock_top_referrers) {
+                $unlockRequirements["top_referrers"] = $level->name;
+            }
+        }
+
+        // 7. Format card data (user-specific)
         $cardData = [
             "current_level" => $currentLevel ? $currentLevel->slug : "beginner",
             "current_level_name" => $currentLevel ? $currentLevel->name : "Beginner",
-            "current_earnings" => round($currentEarnings, 2),
+            "current_earnings" => $currentEarnings,
             "current_level_cpm" => $currentLevel ? $currentLevel->bonus_percentage : 0,
             "current_level_min" => $currentLevel ? $currentLevel->min_total_earnings : 0,
             "next_level_id" => $nextLevel ? $nextLevel->slug : null,
             "next_level_name" => $nextLevelName,
             "next_level_min" => $nextLevelMin,
             "next_level_cpm" => $nextLevelCpm,
-            "needed_to_next_level" => round($neededToNext, 2),
+            "needed_to_next_level" => $neededToNext,
             "progress_percent" => round($progressPercent, 1),
+            // Feature locks based on current level
+            "feature_locks" => [
+                "unlock_ad_level_3" => $currentLevel ? (bool) $currentLevel->unlock_ad_level_3 : false,
+                "unlock_ad_level_4" => $currentLevel ? (bool) $currentLevel->unlock_ad_level_4 : false,
+                "unlock_top_countries" => $currentLevel ? (bool) $currentLevel->unlock_top_countries : false,
+                "unlock_top_referrers" => $currentLevel ? (bool) $currentLevel->unlock_top_referrers : false,
+                "max_referrals" => $currentLevel ? (int) $currentLevel->max_referrals : 10,
+                "monthly_withdrawal_limit" => $currentLevel ? (float) $currentLevel->monthly_withdrawal_limit : 100,
+            ],
+            // Which level unlocks each feature (for locked UI display)
+            "unlock_requirements" => $unlockRequirements,
         ];
 
         // 7. Format level list (uses cached levels, but locked status is per-user)

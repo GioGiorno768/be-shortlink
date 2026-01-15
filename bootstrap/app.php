@@ -21,11 +21,11 @@ return Application::configure(basePath: dirname(__DIR__))
         // $middleware->api(prepend: [
         //     \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
         // ]);
-    
+
         // $middleware->alias([
         //     'verified' => \App\Http\Middleware\EnsureEmailIsVerified::class,
         // ]);
-    
+
         // ✅ Group API - TANPA CSRF dan Session
         $middleware->group('api', [
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
@@ -48,7 +48,6 @@ return Application::configure(basePath: dirname(__DIR__))
             'super_admin' => \App\Http\Middleware\SuperAdminMiddleware::class,
             'is_banned' => \App\Http\Middleware\CheckBanned::class,
         ]);
-
     })
 
     ->withSchedule(function (Schedule $schedule) {
@@ -87,4 +86,3 @@ return Application::configure(basePath: dirname(__DIR__))
         });
     })
     ->create();
-

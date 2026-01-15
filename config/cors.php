@@ -30,6 +30,8 @@ return [
         env('FRONTEND_URL', 'http://localhost:5173'),
         'http://localhost:3000', // Main App (shortlinku)
         'http://localhost:3001', // Viewer App (shortlinkmu-viewer)
+        'http://192.168.112.94:3001', 
+        'http://192.168.112.94:3000',
     ],
 
     'allowed_origins_patterns' => [],

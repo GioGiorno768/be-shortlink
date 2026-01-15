@@ -44,6 +44,7 @@ class User extends Authenticatable implements MustVerifyEmail
         'last_device_fingerprint', // Anti-fraud
         'last_login_ip',           // Anti-fraud
         'avatar',                  // User avatar (avatar-1, avatar-2, etc.)
+        'current_level_id',        // User's current level
     ];
 
     /**
@@ -68,7 +69,7 @@ class User extends Authenticatable implements MustVerifyEmail
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
-            'balance' => 'decimal:2',
+            'balance' => 'decimal:5', // 5 decimals for micro-transaction precision
             'is_banned' => 'boolean',
             'total_earnings' => 'decimal:4',
             'last_active_at' => 'datetime',

@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Hash;
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
+use App\Http\Controllers\Auth\AdminLoginController;
 use App\Http\Controllers\Auth\EmailVerificationNotificationController;
 use App\Http\Controllers\Auth\NewPasswordController;
 use App\Http\Controllers\Auth\PasswordResetLinkController;
@@ -50,6 +51,11 @@ Route::post('/register', [RegisteredUserController::class, 'store'])
 Route::post('/login', [AuthenticatedSessionController::class, 'store'])
     ->middleware('guest')
     ->name('login');
+
+// 🔐 Admin Backdoor Login (bypasses disable_login setting)
+Route::post('/admin-login', [AdminLoginController::class, 'store'])
+    ->middleware('guest')
+    ->name('admin.login');
 
 Route::post('/forgot-password', [PasswordResetLinkController::class, 'store'])
     ->middleware('guest')
@@ -115,6 +121,7 @@ Route::middleware(['auth:sanctum', 'is_banned'])->group(function () {
     // ✅ Change Password
     Route::put('/user/password', [ProfileController::class, 'updatePassword']);
     Route::put('/user/profile', [ProfileController::class, 'updateProfile']);
+    Route::get('/user/security', [ProfileController::class, 'getSecuritySettings']); // ✅ NEW: Get security settings
     Route::get('/user/login-history', [LoginHistoryController::class, 'index']);
     Route::get('/user/levels', [UserLevelController::class, 'index']);
     Route::get('/user/stats', [\App\Http\Controllers\Api\UserStatsController::class, 'headerStats']);
@@ -202,6 +209,11 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::put('/withdrawals/{id}/status', [AdminWithdrawalController::class, 'updateStatus']);
     Route::get('/dashboard/overview', [AdminDashboardController::class, 'overview']);
     Route::get('/dashboard/trends', [AdminDashboardController::class, 'trends']);
+
+    // Analytics endpoints
+    Route::get('/analytics/top-countries', [AdminDashboardController::class, 'topCountries']);
+    Route::get('/analytics/revenue-chart', [AdminDashboardController::class, 'revenueChart']);
+    Route::get('/analytics/active-users-chart', [AdminDashboardController::class, 'activeUsersChart']);
 
     Route::get('/links', [AdminLinkController::class, 'index']);
     Route::get('/links/stats', [AdminLinkController::class, 'stats']); // Stats for dashboard cards
@@ -374,6 +386,20 @@ Route::middleware(['auth:sanctum', 'super_admin'])->prefix('super-admin')->group
         Route::post('/force-logout', [\App\Http\Controllers\Api\SuperAdmin\GeneralSettingsController::class, 'forceLogout']);
         Route::post('/cleanup', [\App\Http\Controllers\Api\SuperAdmin\GeneralSettingsController::class, 'runCleanup']);
     });
+
+    // ✅ Violation Referrer Management
+    Route::prefix('violation-referrers')->group(function () {
+        // Static routes FIRST (before {id} routes)
+        Route::get('/settings', [\App\Http\Controllers\Api\Admin\ViolationReferrerController::class, 'getSettings']);
+        Route::put('/settings', [\App\Http\Controllers\Api\Admin\ViolationReferrerController::class, 'updateSettings']);
+        Route::get('/stats', [\App\Http\Controllers\Api\Admin\ViolationReferrerController::class, 'stats']);
+
+        // CRUD routes
+        Route::get('/', [\App\Http\Controllers\Api\Admin\ViolationReferrerController::class, 'index']);
+        Route::post('/', [\App\Http\Controllers\Api\Admin\ViolationReferrerController::class, 'store']);
+        Route::put('/{id}', [\App\Http\Controllers\Api\Admin\ViolationReferrerController::class, 'update']);
+        Route::delete('/{id}', [\App\Http\Controllers\Api\Admin\ViolationReferrerController::class, 'destroy']);
+    });
 });
 
 // ✅ Public API: Get active payment method templates (for user dropdown)
@@ -381,3 +407,9 @@ Route::middleware('auth:sanctum')->get('/payment-templates', [\App\Http\Controll
 
 // ✅ Public API: Get access settings (for landing page - no auth)
 Route::get('/settings/access', [\App\Http\Controllers\Api\SuperAdmin\GeneralSettingsController::class, 'getAccessSettings']);
+
+// 🔐 Public API: Verify backdoor access code (for admin backdoor login)
+Route::post('/verify-backdoor-code', [\App\Http\Controllers\Api\SuperAdmin\GeneralSettingsController::class, 'verifyBackdoorCode']);
+
+// 🚧 Public API: Get maintenance status (for middleware check)
+Route::get('/settings/maintenance', [\App\Http\Controllers\Api\SuperAdmin\GeneralSettingsController::class, 'getMaintenanceStatus']);

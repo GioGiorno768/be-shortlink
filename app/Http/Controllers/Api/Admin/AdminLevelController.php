@@ -28,6 +28,13 @@ class AdminLevelController extends Controller
                 'iconColor' => $level->icon_color,
                 'bgColor' => $level->bg_color,
                 'borderColor' => $level->border_color,
+                // Feature locks
+                'unlockAdLevel3' => (bool) $level->unlock_ad_level_3,
+                'unlockAdLevel4' => (bool) $level->unlock_ad_level_4,
+                'unlockTopCountries' => (bool) $level->unlock_top_countries,
+                'unlockTopReferrers' => (bool) $level->unlock_top_referrers,
+                'maxReferrals' => (int) $level->max_referrals,
+                'monthlyWithdrawalLimit' => (float) $level->monthly_withdrawal_limit,
                 'createdAt' => $level->created_at,
                 'updatedAt' => $level->updated_at,
             ];
@@ -53,6 +60,13 @@ class AdminLevelController extends Controller
             'iconColor' => $level->icon_color,
             'bgColor' => $level->bg_color,
             'borderColor' => $level->border_color,
+            // Feature locks
+            'unlockAdLevel3' => (bool) $level->unlock_ad_level_3,
+            'unlockAdLevel4' => (bool) $level->unlock_ad_level_4,
+            'unlockTopCountries' => (bool) $level->unlock_top_countries,
+            'unlockTopReferrers' => (bool) $level->unlock_top_referrers,
+            'maxReferrals' => (int) $level->max_referrals,
+            'monthlyWithdrawalLimit' => (float) $level->monthly_withdrawal_limit,
         ], 'Level retrieved');
     }
 
@@ -71,6 +85,13 @@ class AdminLevelController extends Controller
             'iconColor' => 'required|string|max:50',
             'bgColor' => 'required|string|max:50',
             'borderColor' => 'required|string|max:50',
+            // Feature locks
+            'unlockAdLevel3' => 'boolean',
+            'unlockAdLevel4' => 'boolean',
+            'unlockTopCountries' => 'boolean',
+            'unlockTopReferrers' => 'boolean',
+            'maxReferrals' => 'integer|min:-1',
+            'monthlyWithdrawalLimit' => 'numeric|min:-1',
         ]);
 
         if ($validator->fails()) {
@@ -96,6 +117,13 @@ class AdminLevelController extends Controller
             'icon_color' => $request->iconColor,
             'bg_color' => $request->bgColor,
             'border_color' => $request->borderColor,
+            // Feature locks
+            'unlock_ad_level_3' => $request->unlockAdLevel3 ?? false,
+            'unlock_ad_level_4' => $request->unlockAdLevel4 ?? false,
+            'unlock_top_countries' => $request->unlockTopCountries ?? false,
+            'unlock_top_referrers' => $request->unlockTopReferrers ?? false,
+            'max_referrals' => $request->maxReferrals ?? 10,
+            'monthly_withdrawal_limit' => $request->monthlyWithdrawalLimit ?? 100,
         ]);
 
         // Clear cache
@@ -131,6 +159,13 @@ class AdminLevelController extends Controller
             'iconColor' => 'sometimes|string|max:50',
             'bgColor' => 'sometimes|string|max:50',
             'borderColor' => 'sometimes|string|max:50',
+            // Feature locks
+            'unlockAdLevel3' => 'boolean',
+            'unlockAdLevel4' => 'boolean',
+            'unlockTopCountries' => 'boolean',
+            'unlockTopReferrers' => 'boolean',
+            'maxReferrals' => 'integer|min:-1',
+            'monthlyWithdrawalLimit' => 'numeric|min:-1',
         ]);
 
         if ($validator->fails()) {
@@ -147,6 +182,13 @@ class AdminLevelController extends Controller
         if ($request->has('iconColor')) $updateData['icon_color'] = $request->iconColor;
         if ($request->has('bgColor')) $updateData['bg_color'] = $request->bgColor;
         if ($request->has('borderColor')) $updateData['border_color'] = $request->borderColor;
+        // Feature locks
+        if ($request->has('unlockAdLevel3')) $updateData['unlock_ad_level_3'] = $request->unlockAdLevel3;
+        if ($request->has('unlockAdLevel4')) $updateData['unlock_ad_level_4'] = $request->unlockAdLevel4;
+        if ($request->has('unlockTopCountries')) $updateData['unlock_top_countries'] = $request->unlockTopCountries;
+        if ($request->has('unlockTopReferrers')) $updateData['unlock_top_referrers'] = $request->unlockTopReferrers;
+        if ($request->has('maxReferrals')) $updateData['max_referrals'] = $request->maxReferrals;
+        if ($request->has('monthlyWithdrawalLimit')) $updateData['monthly_withdrawal_limit'] = $request->monthlyWithdrawalLimit;
 
         $level->update($updateData);
 
@@ -163,6 +205,13 @@ class AdminLevelController extends Controller
             'iconColor' => $level->icon_color,
             'bgColor' => $level->bg_color,
             'borderColor' => $level->border_color,
+            // Feature locks
+            'unlockAdLevel3' => (bool) $level->unlock_ad_level_3,
+            'unlockAdLevel4' => (bool) $level->unlock_ad_level_4,
+            'unlockTopCountries' => (bool) $level->unlock_top_countries,
+            'unlockTopReferrers' => (bool) $level->unlock_top_referrers,
+            'maxReferrals' => (int) $level->max_referrals,
+            'monthlyWithdrawalLimit' => (float) $level->monthly_withdrawal_limit,
         ], 'Level updated successfully');
     }
 

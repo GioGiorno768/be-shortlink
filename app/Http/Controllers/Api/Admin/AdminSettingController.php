@@ -51,6 +51,7 @@ class AdminSettingController extends Controller
         );
 
         Cache::forget('ad_rates_all'); // Clear cache
+        Cache::forget('app_ad_cpc_rates'); // Clear CPC rates cache in LinkController
 
         return $this->successResponse($rate, 'Tarif iklan berhasil diperbarui.');
     }
@@ -71,6 +72,7 @@ class AdminSettingController extends Controller
 
         $rate->delete();
         Cache::forget('ad_rates_all');
+        Cache::forget('app_ad_cpc_rates');
 
         return $this->successResponse(null, "Tarif untuk $country berhasil dihapus.");
     }
@@ -107,6 +109,7 @@ class AdminSettingController extends Controller
         }
 
         Cache::forget('ad_rates_all');
+        Cache::forget('app_ad_cpc_rates');
         return $this->successResponse(['new_level' => $newKey], "Level $newLevel berhasil ditambahkan.");
     }
 
@@ -146,6 +149,7 @@ class AdminSettingController extends Controller
         }
 
         Cache::forget('ad_rates_all');
+        Cache::forget('app_ad_cpc_rates');
 
         return $this->successResponse(null, "Level $key berhasil dihapus. $affectedLinksCount link telah diturunkan ke level " . ($levelToDelete - 1) . ".");
     }

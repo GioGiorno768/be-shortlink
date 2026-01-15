@@ -81,6 +81,9 @@ class RegisteredUserController extends Controller
                 }
             }
 
+            // Get Beginner level (lowest level) for new users
+            $beginnerLevel = \App\Models\Level::orderBy('min_total_earnings', 'asc')->first();
+
             // Buat User Baru
             return User::create([
                 'name' => $request->name,
@@ -90,6 +93,7 @@ class RegisteredUserController extends Controller
                 'referred_by' => $referrerId,
                 'balance' => 0,
                 'pending_balance' => 0,
+                'current_level_id' => $beginnerLevel?->id,
             ]);
         });
 

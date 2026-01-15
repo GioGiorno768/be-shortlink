@@ -11,19 +11,117 @@ use Illuminate\Support\Facades\DB;
 
 class AdminDashboardController extends Controller
 {
-    // Statistik global
-    public function overview()
+    // Statistik global with optional period filter
+    public function overview(Request $request)
     {
         $today = now()->startOfDay();
         $yesterday = now()->subDay()->startOfDay();
         $yesterdayEnd = now()->startOfDay();
+        $thirtyDaysAgo = now()->subDays(30);
+        $sixtyDaysAgo = now()->subDays(60);
 
         // ============================================
-        // 1. BASIC STATS (Totals)
+        // 0. PERIOD FILTER HANDLING
         // ============================================
-        $totalUsers = User::count();
-        $totalLinks = Link::count();
-        $totalClicks = DB::table('views')->count();
+        $period = $request->input('period', 'all');
+        $periodStart = null;
+
+        switch ($period) {
+            case 'week':
+                $periodStart = now()->startOfWeek();
+                break;
+            case 'month':
+                $periodStart = now()->startOfMonth();
+                break;
+            case 'year':
+                $periodStart = now()->startOfYear();
+                break;
+            default:
+                $periodStart = null; // all time
+        }
+
+        // ============================================
+        // 1. BASIC STATS (Filtered by period if set)
+        // ============================================
+        $totalUsers = User::where('role', 'user')
+            ->when($periodStart, fn($q) => $q->where('created_at', '>=', $periodStart))
+            ->count();
+
+        $totalLinks = Link::query()
+            ->when($periodStart, fn($q) => $q->where('created_at', '>=', $periodStart))
+            ->count();
+
+        $totalClicks = DB::table('views')
+            ->when($periodStart, fn($q) => $q->where('created_at', '>=', $periodStart))
+            ->count();
+
+        // Active users (in period or last 30 days for 'all')
+        $activeUsers = User::where('role', 'user')
+            ->where('updated_at', '>=', $periodStart ?? $thirtyDaysAgo)
+            ->count();
+
+        // ============================================
+        // 1b. REVENUE STATS (NEW - Filtered by period)
+        // ============================================
+        $totalPaid = Payout::where('status', 'paid')
+            ->when($periodStart, fn($q) => $q->where('updated_at', '>=', $periodStart))
+            ->sum('amount');
+
+        $totalPending = Payout::where('status', 'pending')
+            ->when($periodStart, fn($q) => $q->where('created_at', '>=', $periodStart))
+            ->sum('amount');
+
+        $totalTransactions = Payout::where('status', 'paid')
+            ->when($periodStart, fn($q) => $q->where('updated_at', '>=', $periodStart))
+            ->count();
+
+        // Est. Revenue (reverse calculation from user earnings)
+        // Assuming users get ~70% of ad revenue
+        $estRevenue = $totalPaid > 0 ? round($totalPaid / 0.7, 2) : 0;
+
+        // ============================================
+        // 1c. GROWTH CALCULATIONS (vs previous period)
+        // ============================================
+        // Users growth
+        $previousPeriodUsers = User::where('role', 'user')
+            ->where('created_at', '<', $thirtyDaysAgo)
+            ->where('created_at', '>=', $sixtyDaysAgo)
+            ->count();
+        $recentUsers = User::where('role', 'user')
+            ->where('created_at', '>=', $thirtyDaysAgo)
+            ->count();
+
+        // Links growth
+        $previousPeriodLinks = Link::where('created_at', '<', $thirtyDaysAgo)
+            ->where('created_at', '>=', $sixtyDaysAgo)
+            ->count();
+        $recentLinks = Link::where('created_at', '>=', $thirtyDaysAgo)
+            ->count();
+
+        // Clicks growth
+        $previousPeriodClicks = DB::table('views')
+            ->where('created_at', '<', $thirtyDaysAgo)
+            ->where('created_at', '>=', $sixtyDaysAgo)
+            ->count();
+        $recentClicks = DB::table('views')
+            ->where('created_at', '>=', $thirtyDaysAgo)
+            ->count();
+
+        // Active users growth
+        $previousActiveUsers = User::where('role', 'user')
+            ->where('updated_at', '<', $thirtyDaysAgo)
+            ->where('updated_at', '>=', $sixtyDaysAgo)
+            ->count();
+
+        $calcGrowth = function ($recent, $previous) {
+            if ($previous == 0) return $recent > 0 ? 100 : 0;
+            return round((($recent - $previous) / $previous) * 100, 1);
+        };
+
+        $totalUsersGrowth = $calcGrowth($recentUsers, $previousPeriodUsers);
+        $totalLinksGrowth = $calcGrowth($recentLinks, $previousPeriodLinks);
+        $totalClicksGrowth = $calcGrowth($recentClicks, $previousPeriodClicks);
+        $activeUsersGrowth = $calcGrowth($activeUsers, $previousActiveUsers);
 
         // ============================================
         // 2. TODAY'S STATS + YESTERDAY FOR TRENDS
@@ -42,7 +140,13 @@ class AdminDashboardController extends Controller
             ->selectRaw('COALESCE(SUM(amount), 0) as amount')
             ->first();
 
-        // Links Created Today & Yesterday
+        // Staff Online (Active in last 15 mins) & Total Staff
+        // Assuming roles: 'admin', 'super-admin'
+        $staffRoles = ['admin', 'super-admin', 'super_admin'];
+        $staffOnline = User::whereIn('role', $staffRoles)
+            ->where('last_active_at', '>=', now()->subMinutes(15))
+            ->count();
+        $totalStaff = User::whereIn('role', $staffRoles)->count();
         $linksCreatedToday = Link::where('created_at', '>=', $today)->count();
         $linksCreatedYesterday = Link::whereBetween('created_at', [$yesterday, $yesterdayEnd])->count();
 
@@ -159,10 +263,21 @@ class AdminDashboardController extends Controller
         // RESPONSE
         // ============================================
         return $this->successResponse([
-            // Basic totals
+            // Basic totals + growth (for Platform Analytics)
             'total_users' => $totalUsers,
+            'total_users_growth' => $totalUsersGrowth,
+            'active_users' => $activeUsers,
+            'active_users_growth' => $activeUsersGrowth,
             'total_links' => $totalLinks,
+            'total_links_growth' => $totalLinksGrowth,
             'total_clicks' => $totalClicks,
+            'total_clicks_growth' => $totalClicksGrowth,
+
+            // Revenue stats (for Platform Analytics - filtered by period)
+            'est_revenue' => (float) $estRevenue,
+            'total_paid' => (float) $totalPaid,
+            'total_pending' => (float) $totalPending,
+            'total_transactions' => (int) $totalTransactions,
 
             // Today's stats with trends (for TopStatsCards)
             'payments_today_amount' => (float) ($paymentsToday->amount ?? 0),
@@ -175,6 +290,9 @@ class AdminDashboardController extends Controller
 
             'links_blocked_today' => $linksBlockedToday,
             'blocked_trend' => $blockedTrend,
+
+            'staff_online' => $staffOnline,
+            'total_staff' => $totalStaff,
 
             // Withdrawal stats
             'pending_withdrawals' => $pendingWithdrawalsCount,
@@ -198,7 +316,7 @@ class AdminDashboardController extends Controller
             ->get();
 
         $transactionVolume = Payout::selectRaw('DATE_FORMAT(created_at, "%Y-%m") as month, SUM(amount) as amount')
-            ->where('status', 'approved') // Only count approved payouts
+            ->where('status', 'paid')
             ->groupBy('month')
             ->orderBy('month')
             ->get();
@@ -207,5 +325,188 @@ class AdminDashboardController extends Controller
             'user_growth' => $userGrowth,
             'transaction_volume' => $transactionVolume,
         ], 'Trends data retrieved');
+    }
+
+    /**
+     * Platform-wide top countries by views
+     * Uses aggregated user_country_stats table for performance
+     */
+    public function topCountries()
+    {
+        // Country code to name mapping
+        $countryNames = [
+            'ID' => 'Indonesia',
+            'US' => 'United States',
+            'GB' => 'United Kingdom',
+            'MY' => 'Malaysia',
+            'SG' => 'Singapore',
+            'PH' => 'Philippines',
+            'TH' => 'Thailand',
+            'VN' => 'Vietnam',
+            'IN' => 'India',
+            'AU' => 'Australia',
+            'JP' => 'Japan',
+            'KR' => 'South Korea',
+            'DE' => 'Germany',
+            'FR' => 'France',
+            'BR' => 'Brazil',
+            'CA' => 'Canada',
+            'NL' => 'Netherlands',
+            'IT' => 'Italy',
+        ];
+
+        // Get views grouped by country from aggregated table
+        $countries = DB::table('user_country_stats')
+            ->selectRaw('country_code, SUM(view_count) as views')
+            ->whereNotNull('country_code')
+            ->groupBy('country_code')
+            ->orderByDesc('views')
+            ->limit(10)
+            ->get();
+
+        $totalViews = DB::table('user_country_stats')->sum('view_count');
+
+        // Calculate percentages
+        $items = $countries->map(function ($item) use ($totalViews, $countryNames) {
+            $code = $item->country_code ?? 'OTHER';
+            return [
+                'country_code' => $code,
+                'country_name' => $countryNames[$code] ?? $code,
+                'views' => (int) $item->views,
+                'percentage' => $totalViews > 0
+                    ? round(($item->views / $totalViews) * 100, 1)
+                    : 0,
+            ];
+        });
+
+        return $this->successResponse([
+            'items' => $items,
+            'total_views' => (int) $totalViews,
+        ], 'Top countries retrieved');
+    }
+
+    /**
+     * Revenue estimation chart data
+     * Returns user earnings and estimated platform revenue
+     */
+    public function revenueChart(Request $request)
+    {
+        $period = $request->input('period', 'perWeek');
+
+        $categories = [];
+        $userEarnings = [];
+
+        if ($period === 'perWeek') {
+            // Last 7 days
+            for ($i = 6; $i >= 0; $i--) {
+                $date = now()->subDays($i);
+                $categories[] = $date->format('D'); // Mon, Tue, etc.
+
+                $earnings = Payout::where('status', 'paid')
+                    ->whereDate('updated_at', $date->toDateString())
+                    ->sum('amount');
+                $userEarnings[] = round($earnings, 2);
+            }
+        } elseif ($period === 'perMonth') {
+            // Last 4 weeks
+            for ($i = 3; $i >= 0; $i--) {
+                $weekStart = now()->subWeeks($i)->startOfWeek();
+                $weekEnd = now()->subWeeks($i)->endOfWeek();
+                $categories[] = 'Week ' . (4 - $i);
+
+                $earnings = Payout::where('status', 'paid')
+                    ->whereBetween('updated_at', [$weekStart, $weekEnd])
+                    ->sum('amount');
+                $userEarnings[] = round($earnings, 2);
+            }
+        } else {
+            // perYear - Last 12 months
+            for ($i = 11; $i >= 0; $i--) {
+                $month = now()->subMonths($i);
+                $categories[] = $month->format('M'); // Jan, Feb, etc.
+
+                $earnings = Payout::where('status', 'paid')
+                    ->whereMonth('updated_at', $month->month)
+                    ->whereYear('updated_at', $month->year)
+                    ->sum('amount');
+                $userEarnings[] = round($earnings, 2);
+            }
+        }
+
+        // Calculate estimated platform revenue (user gets ~70%)
+        $estimatedRevenue = array_map(fn($val) => round($val / 0.7, 2), $userEarnings);
+
+        return $this->successResponse([
+            'categories' => $categories,
+            'series' => [
+                [
+                    'name' => 'Est. Platform Revenue (100%)',
+                    'data' => $estimatedRevenue,
+                ],
+                [
+                    'name' => 'User Earnings (70%)',
+                    'data' => $userEarnings,
+                ],
+            ],
+        ], 'Revenue chart data retrieved');
+    }
+
+    /**
+     * Active users chart data
+     * Returns user activity trends
+     */
+    public function activeUsersChart(Request $request)
+    {
+        $period = $request->input('period', 'week');
+
+        $categories = [];
+        $activeUsers = [];
+
+        if ($period === 'week') {
+            // Last 7 days - daily active users
+            for ($i = 6; $i >= 0; $i--) {
+                $date = now()->subDays($i);
+                $categories[] = $date->format('D');
+
+                $count = User::where('role', 'user')
+                    ->whereDate('updated_at', $date->toDateString())
+                    ->count();
+                $activeUsers[] = $count;
+            }
+        } elseif ($period === 'month') {
+            // Last 4 weeks
+            for ($i = 3; $i >= 0; $i--) {
+                $weekStart = now()->subWeeks($i)->startOfWeek();
+                $weekEnd = now()->subWeeks($i)->endOfWeek();
+                $categories[] = 'Week ' . (4 - $i);
+
+                $count = User::where('role', 'user')
+                    ->whereBetween('updated_at', [$weekStart, $weekEnd])
+                    ->count();
+                $activeUsers[] = $count;
+            }
+        } else {
+            // year - Last 12 months
+            for ($i = 11; $i >= 0; $i--) {
+                $month = now()->subMonths($i);
+                $categories[] = $month->format('M');
+
+                $count = User::where('role', 'user')
+                    ->whereMonth('updated_at', $month->month)
+                    ->whereYear('updated_at', $month->year)
+                    ->count();
+                $activeUsers[] = $count;
+            }
+        }
+
+        return $this->successResponse([
+            'categories' => $categories,
+            'series' => [
+                [
+                    'name' => 'Active Users',
+                    'data' => $activeUsers,
+                ],
+            ],
+        ], 'Active users chart data retrieved');
     }
 }

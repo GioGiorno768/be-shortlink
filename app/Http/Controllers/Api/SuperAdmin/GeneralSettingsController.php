@@ -25,6 +25,7 @@ class GeneralSettingsController extends Controller
         'cleanup_expired_links_days' => 30,
         'cleanup_blocked_links_days' => 7,
         'cleanup_old_notifications_days' => 30,
+        'backdoor_access_code' => 'admin123', // Default backdoor access code
     ];
 
     /**
@@ -58,6 +59,39 @@ class GeneralSettingsController extends Controller
     }
 
     /**
+     * Get maintenance status (public - for middleware check)
+     */
+    public function getMaintenanceStatus(Request $request)
+    {
+        $settings = Cache::remember('general_settings', 300, function () {
+            $setting = Setting::where('key', 'general_settings')->first();
+            return $setting ? $setting->value : $this->defaultSettings;
+        });
+
+        $maintenanceMode = $settings['maintenance_mode'] ?? false;
+        $estimatedTime = $settings['maintenance_estimated_time'] ?? '2-3 jam';
+        $whitelistIps = $settings['maintenance_whitelist_ips'] ?? '';
+
+        // Check if client IP is whitelisted
+        $clientIp = $request->ip();
+        $isWhitelisted = false;
+
+        if (!empty($whitelistIps)) {
+            $whitelist = array_map('trim', explode(',', $whitelistIps));
+            $isWhitelisted = in_array($clientIp, $whitelist);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'maintenance_mode' => $maintenanceMode,
+                'estimated_time' => $estimatedTime,
+                'is_whitelisted' => $isWhitelisted,
+            ],
+        ]);
+    }
+
+    /**
      * Update general settings
      */
     public function updateSettings(Request $request)
@@ -72,6 +106,7 @@ class GeneralSettingsController extends Controller
             'cleanup_expired_links_days' => 'required|integer|min:0|max:365',
             'cleanup_blocked_links_days' => 'required|integer|min:0|max:365',
             'cleanup_old_notifications_days' => 'required|integer|min:0|max:365',
+            'backdoor_access_code' => 'required|string|min:4|max:50',
         ]);
 
         // Get current settings to check if maintenance mode is being turned ON
@@ -152,6 +187,31 @@ class GeneralSettingsController extends Controller
         $total = $result['expired_links'] + $result['blocked_links'] + $result['old_notifications'];
 
         return $this->successResponse($result, "Cleanup completed. {$total} items deleted.");
+    }
+
+    /**
+     * Verify backdoor access code (public endpoint)
+     */
+    public function verifyBackdoorCode(Request $request)
+    {
+        $request->validate([
+            'code' => 'required|string',
+        ]);
+
+        $settings = $this->getCurrentSettings();
+        $storedCode = $settings['backdoor_access_code'] ?? 'admin123';
+
+        if ($request->code === $storedCode) {
+            return response()->json([
+                'success' => true,
+                'message' => 'Access code verified successfully.',
+            ]);
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Invalid access code.',
+        ], 403);
     }
 
     /**

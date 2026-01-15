@@ -147,10 +147,36 @@ class LinkService
      * @param string $ip
      * @param string $countryCode
      * @param string|null $visitorId Device fingerprint from FingerprintJS
+     * @param string|null $referer HTTP Referer header for violation detection
      * @return array ['earning' => float, 'is_valid' => bool, 'rejection_reason' => string|null]
      */
-    public function calculateEarnings(Link $link, $ip, $countryCode, $visitorId = null)
+    public function calculateEarnings(Link $link, $ip, $countryCode, $visitorId = null, $referer = null)
     {
+        // ============================================================
+        // 🚫 LAYER 0: VIOLATION REFERRER CHECK
+        // Block earnings from double-wrapped shortlinks
+        // ============================================================
+        $violationService = app(\App\Services\ViolationService::class);
+
+        if ($violationService->isViolationReferrer($referer)) {
+            // Record violation and potentially apply penalty
+            $violationResult = $violationService->recordViolation($link, $referer);
+
+            Log::warning('🚫 BLOCKED - Violation Referrer Detected', [
+                'link_id' => $link->id,
+                'referer' => $referer,
+                'violation_count' => $violationResult['violation_count'],
+                'penalty_applied' => $violationResult['penalty_applied'],
+            ]);
+
+            return [
+                'earning' => 0,
+                'is_valid' => false,
+                'rejection_reason' => 'Violation Referrer',
+                'violation_referrer' => true,
+            ];
+        }
+
         // Load owner untuk cek self-click
         $owner = $link->user;
 

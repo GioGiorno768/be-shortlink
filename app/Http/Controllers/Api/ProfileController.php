@@ -11,6 +11,21 @@ use Illuminate\Support\Facades\Cache;
 class ProfileController extends Controller
 {
     /**
+     * Get security settings for the user.
+     * Returns whether user is social login (no password set).
+     */
+    public function getSecuritySettings(Request $request)
+    {
+        $user = $request->user();
+
+        return $this->successResponse([
+            'isSocialLogin' => is_null($user->password),
+            'twoFactorEnabled' => false, // TODO: Implement 2FA
+            'lastPasswordChange' => $user->password_changed_at ?? $user->created_at,
+        ], 'Security settings retrieved.');
+    }
+
+    /**
      * Update the user's password.
      */
     public function updatePassword(Request $request)

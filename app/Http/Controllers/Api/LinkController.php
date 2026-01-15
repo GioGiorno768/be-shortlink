@@ -307,22 +307,26 @@ class LinkController extends Controller
         try {
             // 🧱 1️⃣ Ambil data dari cache Redis (jika tersedia)
             $cachedLink = Cache::get("link:{$code}");
+            $linkModel = null; // Will be loaded only if needed
 
             if (!$cachedLink) {
-                $link = Link::where('code', $code)->firstOrFail();
+                $linkModel = Link::where('code', $code)->firstOrFail();
 
-                // 📦 Simpan ke Redis untuk akses cepat
+                // 📦 Simpan ke Redis untuk akses cepat (include views for guest logic)
                 $cachedLink = [
-                    'id' => $link->id,
-                    'original_url' => $link->original_url,
-                    'user_id' => $link->user_id,
-                    'password' => $link->password,
-                    'earn_per_click' => $link->earn_per_click,
-                    'expired_at' => $link->expired_at,
-                    'is_banned' => $link->is_banned,
-                    'ban_reason' => $link->ban_reason,
-                    'status' => $link->status,
-                    'ad_level' => $link->ad_level ?? 1, // ✅ Include ad_level
+                    'id' => $linkModel->id,
+                    'original_url' => $linkModel->original_url,
+                    'user_id' => $linkModel->user_id,
+                    'password' => $linkModel->password,
+                    'earn_per_click' => $linkModel->earn_per_click,
+                    'expired_at' => $linkModel->expired_at,
+                    'is_banned' => $linkModel->is_banned,
+                    'ban_reason' => $linkModel->ban_reason,
+                    'status' => $linkModel->status,
+                    'ad_level' => $linkModel->ad_level ?? 1,
+                    // 🚀 OPTIMIZATION: Include views data to avoid extra queries
+                    'views' => $linkModel->views ?? 0,
+                    'next_confirm_at' => $linkModel->next_confirm_at ?? 2,
                 ];
 
                 Cache::put("link:{$code}", $cachedLink, now()->addMinutes(10));
@@ -330,24 +334,21 @@ class LinkController extends Controller
 
             // ✅ PRIORITY 1: Check STATUS first (Disabled acts like expired)
             if (isset($cachedLink['status']) && $cachedLink['status'] !== 'active') {
-                $frontendUrl = "http://localhost:3000/expired";
-                Log::info("Redirecting to expired page (DISABLED) for code: {$code}");
-                return redirect("{$frontendUrl}");
+                $frontendUrl = config('app.frontend_url', 'http://localhost:3000') . '/expired';
+                return redirect($frontendUrl);
             }
 
             // ✅ PRIORITY 2: Check EXPIRED
             $expiredAt = isset($cachedLink['expired_at']) ? \Carbon\Carbon::parse($cachedLink['expired_at']) : null;
             if ($expiredAt && now()->greaterThan($expiredAt)) {
-                $frontendUrl = "http://localhost:3000/expired";
-                Log::info("Redirecting to expired page (EXPIRED DATE) for code: {$code}");
-                return redirect("{$frontendUrl}");
+                $frontendUrl = config('app.frontend_url', 'http://localhost:3000') . '/expired';
+                return redirect($frontendUrl);
             }
 
             // ✅ PRIORITY 3: Check BANNED
             if (isset($cachedLink['is_banned']) && $cachedLink['is_banned']) {
-                $viewerUrl = "http://localhost:3001/banned";
+                $viewerUrl = config('app.viewer_url', 'http://localhost:3001') . '/banned';
                 $reason = urlencode($cachedLink['ban_reason'] ?? '');
-                Log::info("Redirecting to banned page for code: {$code}");
                 return redirect("{$viewerUrl}?reason={$reason}");
             }
 
@@ -363,29 +364,31 @@ class LinkController extends Controller
             };
 
             // ========================================
-            // 🎟️ GUEST LINK FREE PASS - BEFORE RATE LIMIT
-            // Direct redirects bypass rate limiting for better UX
+            // 🎟️ GUEST LINK FREE PASS - OPTIMIZED
+            // Uses cached views count, only hits DB for increment
             // ========================================
             if (!$userId) {
-                $linkModel = Link::find($cachedLink['id']);
-                $currentViews = $linkModel->views ?? 0;
+                // 🚀 OPTIMIZATION: Use cached views instead of DB query
+                $currentViews = $cachedLink['views'] ?? 0;
+                $nextConfirm = $cachedLink['next_confirm_at'] ?? 2;
 
-                // Click 1 (views=0): Always direct redirect - FREE PASS (no rate limit)
+                // Click 1 (views=0): Always direct redirect - FREE PASS
                 if ($currentViews === 0) {
-                    $linkModel->increment('views');
-                    Log::info("🎟️ Guest Free Pass: Click 1 - Direct redirect", ['code' => $code]);
+                    // 🚀 Atomic increment via DB (faster than load + increment)
+                    Link::where('id', $cachedLink['id'])->increment('views');
+                    // Update cache with new views count
+                    $cachedLink['views'] = 1;
+                    Cache::put("link:{$code}", $cachedLink, now()->addMinutes(10));
                     return redirect()->away($cachedLink['original_url']);
                 }
 
                 // Click 3+ (views>=2): Check against next_confirm_at for FREE PASS
-                if ($currentViews >= 2) {
-                    $nextConfirm = $linkModel->next_confirm_at ?? 2;
-                    if ($currentViews < $nextConfirm) {
-                        // Free pass - direct redirect (no rate limit)
-                        $linkModel->increment('views');
-                        Log::info("🎟️ Guest Free Pass: Click {$currentViews} - Direct redirect (next confirm at {$nextConfirm})", ['code' => $code]);
-                        return redirect()->away($cachedLink['original_url']);
-                    }
+                if ($currentViews >= 2 && $currentViews < $nextConfirm) {
+                    // Free pass - direct redirect
+                    Link::where('id', $cachedLink['id'])->increment('views');
+                    $cachedLink['views'] = $currentViews + 1;
+                    Cache::put("link:{$code}", $cachedLink, now()->addMinutes(10));
+                    return redirect()->away($cachedLink['original_url']);
                 }
                 // If not a direct redirect, continue to rate limiter and confirmation page
             }
@@ -395,24 +398,24 @@ class LinkController extends Controller
             $ip = $request->ip();
             if (app()->environment('local') && $ip === '127.0.0.1') {
                 $ip = '36.84.69.10';
-                // $ip = '8.8.8.8';
             }
             $userAgent = $request->header('User-Agent');
             $tokenKey = "token:{$code}:" . md5("{$ip}-{$userAgent}");
+            $originalReferer = $request->query('ref') ?? $request->headers->get('referer');
 
             Cache::put($tokenKey, [
                 'token' => $token,
                 'ip' => $ip,
                 'user_agent' => $userAgent,
                 'status' => 'pending',
-                'min_wait_seconds' => 5, // Reduced to 5 seconds
+                'min_wait_seconds' => 5,
                 'created_at' => now(),
                 'activated_at' => null,
-                // 🛡️ Step validation fields
                 'completed_step' => 0,
                 'max_steps' => $maxSteps,
                 'ad_level' => $adLevel,
-            ], now()->addSeconds(600)); // 10 minutes for multi-step
+                'original_referer' => $originalReferer,
+            ], now()->addSeconds(600));
 
             // 🛡️ 4️⃣ Rate limiting (maks 3 request per menit per IP)
             $rateKey = "rate:{$ip}:{$code}";
@@ -424,37 +427,25 @@ class LinkController extends Controller
             // 📈 5️⃣ Catat tampilan awal (pre-view) ringan ke Redis
             Cache::increment("preview:{$code}:count");
 
-            // 🟢 SKENARIO 1: Guest Link - CONFIRMATION PAGE (after rate limit)
+            // 🟢 SKENARIO 1: Guest Link - CONFIRMATION PAGE
             if (!$userId) {
-                $linkModel = Link::find($cachedLink['id']);
-                $currentViews = $linkModel->views ?? 0;
-
-                // Click 2 or confirmation threshold reached - show confirmation page
                 Cache::increment("view:guest:{$code}");
-                $sessionId = $this->createUrlSession($code, $token, 1, 1, 1, true);
-                $viewerUrl = "http://localhost:3001/go";
-                Log::info("🎟️ Guest Free Pass: Click {$currentViews} - Show confirmation", ['code' => $code]);
+                $sessionId = $this->createUrlSession($code, $token, 1, 1, 1, true, $originalReferer);
+                $viewerUrl = config('app.viewer_url', 'http://localhost:3001') . '/go';
                 return redirect("{$viewerUrl}?s={$sessionId}");
             }
 
             // 🟡 SKENARIO 2: Member Link (Safelink)
-            Log::info("🔍 DEBUG show(): ad_level={$adLevel}, maxSteps={$maxSteps}");
-
-            // 🔐 Create session for clean URL
-            $sessionId = $this->createUrlSession($code, $token, 1, $maxSteps, $adLevel, false);
-
-            $viewerUrl = "http://localhost:3001/article/step1";
+            $sessionId = $this->createUrlSession($code, $token, 1, $maxSteps, $adLevel, false, $originalReferer);
+            $viewerUrl = config('app.viewer_url', 'http://localhost:3001') . '/article/step1';
             return redirect("{$viewerUrl}?s={$sessionId}");
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            // 🚫 7️⃣ Jika link tidak ditemukan
             return $this->errorResponse('Shortlink not found.', 404);
         } catch (\Exception $e) {
-            // ⚠️ 8️⃣ Fallback error umum
             Log::error('Error in show(): ' . $e->getMessage(), [
                 'code' => $code,
                 'ip' => $request->ip()
             ]);
-
             return $this->errorResponse('Internal server error.', 500);
         }
     }
@@ -695,7 +686,7 @@ class LinkController extends Controller
      * Create session - Store link data in Redis, return session ID
      * Called internally when redirecting to viewer
      */
-    private function createUrlSession(string $code, string $token, int $step, int $maxSteps, int $adLevel, bool $isGuest = false): string
+    private function createUrlSession(string $code, string $token, int $step, int $maxSteps, int $adLevel, bool $isGuest = false, ?string $originalReferer = null): string
     {
         $sessionId = $this->generateSessionId();
         $sessionKey = "url_session:{$sessionId}";
@@ -707,6 +698,7 @@ class LinkController extends Controller
             'max_steps' => $maxSteps,
             'ad_level' => $adLevel,
             'is_guest' => $isGuest,
+            'original_referer' => $originalReferer, // 🔗 Store original referer for analytics
             'created_at' => now()->toISOString(),
         ], now()->addMinutes(15)); // 15 minutes TTL
 
@@ -847,28 +839,36 @@ class LinkController extends Controller
             Log::info("🎟️ Guest Free Pass: views={$currentViews}, next_confirm_at={$nextConfirm}");
         }
 
+        // 🔗 Get original referer BEFORE validateToken (which deletes the token cache!)
+        $userAgent = $request->header('User-Agent') ?? '';
+        $tokenKey = "token:{$code}:" . md5("{$ip}-{$userAgent}");
+        $cachedToken = Cache::get($tokenKey);
+        $originalReferer = $cachedToken['original_referer'] ?? null;
+
+        // 🔍 DEBUG: Log what referer we read from token cache
+        Log::info("🔗 continue() referer from token cache", [
+            'code' => $code,
+            'token_key' => $tokenKey,
+            'has_cached_token' => $cachedToken ? true : false,
+            'original_referer' => $originalReferer,
+        ]);
+
         // 🛡️ STEP VALIDATION: Only for NON-guest links (member safelinks)
-        if (!$isGuestLink) {
-            $userAgent = $request->header('User-Agent') ?? '';
-            $tokenKey = "token:{$code}:" . md5("{$ip}-{$userAgent}");
-            $cachedToken = Cache::get($tokenKey);
+        if (!$isGuestLink && $cachedToken) {
+            $completedStep = $cachedToken['completed_step'] ?? 0;
+            $maxSteps = $cachedToken['max_steps'] ?? 1;
 
-            if ($cachedToken) {
-                $completedStep = $cachedToken['completed_step'] ?? 0;
-                $maxSteps = $cachedToken['max_steps'] ?? 1;
-
-                if ($completedStep < $maxSteps) {
-                    Log::warning("🛡️ Direct continue attempt blocked", [
-                        'code' => $code,
-                        'completed_step' => $completedStep,
-                        'max_steps' => $maxSteps,
-                    ]);
-                    return $this->errorResponse('Anda harus menyelesaikan semua langkah terlebih dahulu.', 403, [
-                        'completed_step' => $completedStep,
-                        'max_steps' => $maxSteps,
-                        'redirect' => true,
-                    ]);
-                }
+            if ($completedStep < $maxSteps) {
+                Log::warning("🛡️ Direct continue attempt blocked", [
+                    'code' => $code,
+                    'completed_step' => $completedStep,
+                    'max_steps' => $maxSteps,
+                ]);
+                return $this->errorResponse('Anda harus menyelesaikan semua langkah terlebih dahulu.', 403, [
+                    'completed_step' => $completedStep,
+                    'max_steps' => $maxSteps,
+                    'redirect' => true,
+                ]);
             }
         }
 
@@ -895,13 +895,15 @@ class LinkController extends Controller
         $isUnique = $isValidView && $finalEarned > 0;
         $isOwnedByUser = !is_null($linkModel->user_id);
 
+        // 🔗 original_referer was captured earlier (BEFORE validateToken deleted the cache)
+
         // === 6️⃣ Log View & Update Balance (with Shadow Banning)
 
         // 🚀 FULL REDIS MODE: Set to true for startup (lighter storage)
         // Set to false when platform grows and you need detailed analytics
         $FULL_REDIS_MODE = true;
 
-        DB::transaction(function () use ($linkModel, $ip, $request, $finalEarned, $isUnique, $isValidView, $rejectionReason, $isOwnedByUser, $location, $userAgent, $visitorId, $FULL_REDIS_MODE) {
+        DB::transaction(function () use ($linkModel, $ip, $request, $finalEarned, $isUnique, $isValidView, $rejectionReason, $isOwnedByUser, $location, $userAgent, $visitorId, $FULL_REDIS_MODE, $originalReferer) {
 
             // ================================================================
             // 📊 VIEW RECORDING (Only in Hybrid Mode, skipped in Full Redis)
@@ -955,7 +957,8 @@ class LinkController extends Controller
                 // 🔧 4. Update Aggregate Stats (Country & Referrer)
                 // Only for valid views from owned links
                 UserCountryStat::incrementView($linkModel->user_id, $location['code'] ?? 'OTHER');
-                UserReferrerStat::incrementView($linkModel->user_id, $request->headers->get('referer'));
+                // 🔗 Use original referer from first click, not current request
+                UserReferrerStat::incrementView($linkModel->user_id, $originalReferer);
 
                 // 🔧 5. Update Daily Stats (for date filtering)
                 UserDailyStat::incrementStats($linkModel->user_id, $isValidView, $finalEarned);

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\AdRate;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 class AdminCpcRateController extends Controller
 {
@@ -84,6 +85,10 @@ class AdminCpcRateController extends Controller
             AdRate::whereIn('country', $countriesToDelete)->delete();
         }
 
+        // Clear CPC rate caches so changes take effect immediately
+        Cache::forget('ad_rates_all');
+        Cache::forget('app_ad_cpc_rates');
+
         return $this->successResponse(null, 'CPC rates saved successfully');
     }
 
@@ -113,6 +118,10 @@ class AdminCpcRateController extends Controller
             'rates' => $validated['rates'],
         ]);
 
+        // Clear CPC rate caches
+        Cache::forget('ad_rates_all');
+        Cache::forget('app_ad_cpc_rates');
+
         return $this->successResponse([
             'id' => $rate->id,
             'country' => $rate->country,
@@ -139,6 +148,10 @@ class AdminCpcRateController extends Controller
         }
 
         $rate->delete();
+
+        // Clear CPC rate caches
+        Cache::forget('ad_rates_all');
+        Cache::forget('app_ad_cpc_rates');
 
         return $this->successResponse([
             'deleted_country' => $country,

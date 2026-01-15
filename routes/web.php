@@ -38,6 +38,8 @@ Route::get('/{code}', function ($code) {
         'withdrawal',
         'api',
         'sanctum',
+        'backdoor', // Admin backdoor login
+        'maintenance', // Maintenance page
     ];
 
     if (in_array(strtolower($code), $reservedPaths)) {
@@ -45,6 +47,17 @@ Route::get('/{code}', function ($code) {
     }
 
     $link = Link::where('code', $code)->firstOrFail();
+
+    // 🔗 Capture original referer BEFORE redirect (browser will reset it after redirect)
+    $originalReferer = request()->headers->get('referer');
+    $refererParam = $originalReferer ? '?ref=' . urlencode($originalReferer) : '';
+
+    // 🔍 DEBUG: Log referer capture
+    \Illuminate\Support\Facades\Log::info("🔗 web.php referer capture", [
+        'code' => $code,
+        'original_referer' => $originalReferer,
+        'referer_param' => $refererParam,
+    ]);
 
     // ========================================
     // GUEST LINK: Free Pass Logic
@@ -61,7 +74,7 @@ Route::get('/{code}', function ($code) {
         // Click 2 (views=1): Always show confirmation page
         if ($currentViews === 1) {
             // Redirect to API which handles confirmation + sets next_confirm_at
-            return redirect()->away("http://localhost:8000/api/links/{$code}");
+            return redirect()->away(env('APP_URL', 'http://localhost:8000') . "/api/links/{$code}" . $refererParam);
         }
 
         // Click 3+ (views>=2): Check against next_confirm_at
@@ -74,13 +87,13 @@ Route::get('/{code}', function ($code) {
         }
 
         // Time to show confirmation - redirect to API
-        return redirect()->away("http://localhost:8000/api/links/{$code}");
+        return redirect()->away(env('APP_URL', 'http://localhost:8000') . "/api/links/{$code}" . $refererParam);
     }
 
     // ========================================
-    // MEMBER LINK: Redirect to viewer app
+    // MEMBER LINK: Redirect to API (handles session + redirect to viewer)
     // ========================================
-    return redirect()->away("http://localhost:5173/{$code}");
+    return redirect()->away(env('APP_URL', 'http://localhost:8000') . "/api/links/{$code}" . $refererParam);
 });
 
 require __DIR__ . '/auth.php';

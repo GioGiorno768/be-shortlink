@@ -60,7 +60,7 @@ class DashboardController extends Controller
                     'created_at' => $link->created_at->format('d M Y, h:i A'),
                     'views' => (int) $views,
                     'valid_views' => (int) $validViews,
-                    'earnings' => round($earnings, 4),
+                    'earnings' => round($earnings, 5),
                     'cpm' => $cpm,
                 ];
             });
@@ -150,7 +150,7 @@ class DashboardController extends Controller
             return [
                 'date' => $date,
                 'label' => Carbon::parse($date)->format('d M'), // Added label for Chart XAxis
-                'earnings' => round($items->sum('earned'), 2),
+                'earnings' => round($items->sum('earned'), 5),
                 'clicks' => $items->count(),
                 'valid_clicks' => $items->where('is_valid', true)->count(),
             ];

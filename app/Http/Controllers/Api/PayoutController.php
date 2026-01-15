@@ -7,6 +7,7 @@ use App\Models\Payout;
 use App\Models\Setting;
 use App\Models\PaymentMethod;
 use App\Models\User;
+use App\Models\Level;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -14,6 +15,7 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Notification;
 use App\Notifications\GeneralNotification;
+use Carbon\Carbon;
 
 
 
@@ -57,6 +59,34 @@ class PayoutController extends Controller
 
             if ($recentPayouts >= $limitCount) {
                 return $this->errorResponse('Batas frekuensi penarikan tercapai.', 422, ['frequency' => ["Anda hanya dapat melakukan penarikan {$limitCount} kali dalam {$limitDays} hari."]]);
+            }
+        }
+
+        // CEK MONTHLY WITHDRAWAL LIMIT (berdasarkan user level)
+        $monthlyWithdrawalLimit = -1; // Default: unlimited
+        if ($user->current_level_id) {
+            $level = Level::find($user->current_level_id);
+            $monthlyWithdrawalLimit = $level?->monthly_withdrawal_limit ?? -1;
+        }
+
+        if ($monthlyWithdrawalLimit > 0) {
+            // Calculate total withdrawn this month (approved/paid payouts only)
+            $startOfMonth = Carbon::now()->startOfMonth();
+            $monthlyWithdrawn = Payout::where('user_id', $user->id)
+                ->where('created_at', '>=', $startOfMonth)
+                ->whereIn('status', ['pending', 'approved', 'paid'])
+                ->sum('amount');
+
+            $newTotal = $monthlyWithdrawn + $request->amount;
+            if ($newTotal > $monthlyWithdrawalLimit) {
+                $remaining = max(0, $monthlyWithdrawalLimit - $monthlyWithdrawn);
+                return $this->errorResponse('Batas penarikan bulanan tercapai.', 422, [
+                    'monthly_limit' => [
+                        "Limit bulanan Anda adalah \${$monthlyWithdrawalLimit}. " .
+                            "Anda sudah withdraw \${$monthlyWithdrawn} bulan ini. " .
+                            "Sisa limit: \${$remaining}. Upgrade level untuk limit lebih tinggi!"
+                    ]
+                ]);
             }
         }
 
@@ -176,6 +206,22 @@ class PayoutController extends Controller
         $wdSetting = Setting::where('key', 'withdrawal_settings')->first();
         $settings = $wdSetting ? $wdSetting->value : [];
 
+        // Calculate monthly limit info from user's level
+        $monthlyLimit = -1; // Default: unlimited
+        if ($user->current_level_id) {
+            $level = Level::find($user->current_level_id);
+            $monthlyLimit = $level?->monthly_withdrawal_limit ?? -1;
+        }
+
+        // Calculate total withdrawn this month
+        $startOfMonth = Carbon::now()->startOfMonth();
+        $monthlyWithdrawn = Payout::where('user_id', $user->id)
+            ->where('created_at', '>=', $startOfMonth)
+            ->whereIn('status', ['pending', 'approved', 'paid'])
+            ->sum('amount');
+
+        $monthlyRemaining = $monthlyLimit > 0 ? max(0, $monthlyLimit - $monthlyWithdrawn) : -1;
+
         return $this->successResponse([
             'balance' => $user->balance,
             'total_pending' => $totalPending,
@@ -184,6 +230,10 @@ class PayoutController extends Controller
             'max_withdrawal' => $settings['max_amount'] ?? 0,
             'limit_count' => $settings['limit_count'] ?? 0,
             'limit_days' => $settings['limit_days'] ?? 1,
+            // Monthly limit info
+            'monthly_limit' => (float) $monthlyLimit,
+            'monthly_withdrawn' => (float) $monthlyWithdrawn,
+            'monthly_remaining' => (float) $monthlyRemaining,
             'payouts' => $payouts,
         ], 'Withdrawal history retrieved');
     }

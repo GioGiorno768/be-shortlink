@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\User;
+use App\Models\Level;
 use App\Models\Transaction;
 use App\Models\Setting;
 use Carbon\Carbon;
@@ -17,8 +18,8 @@ class ReferralController extends Controller
         $user = $request->user();
         $cacheKey = "referrals:user:{$user->id}";
 
-        // Cache for 2 minutes
-        $data = Cache::remember($cacheKey, 120, function () use ($user) {
+        // Cache for 30 seconds - balances performance with responsiveness
+        $data = Cache::remember($cacheKey, 30, function () use ($user) {
             // 1. Get referral commission rate from settings
             $commissionSetting = Setting::where('key', 'referral_settings')->first();
             if (!$commissionSetting) {
@@ -41,7 +42,18 @@ class ReferralController extends Controller
                 ->where('type', 'referral_commission')
                 ->sum('amount');
 
-            // 3. Get list of referred users with earnings
+            // 3. Get max referrals from user's current level (direct query to avoid accessor caching)
+            if ($user->current_level_id) {
+                $level = Level::find($user->current_level_id);
+                $maxReferrals = $level?->max_referrals ?? 10;
+            } else {
+                // Fallback to lowest level (Beginner) if user has no level assigned
+                $lowestLevel = Level::orderBy('min_total_earnings', 'asc')->first();
+                $maxReferrals = $lowestLevel?->max_referrals ?? 10;
+            }
+            $isLimitReached = $totalInvited >= $maxReferrals;
+
+            // 4. Get list of referred users with earnings
             $referrals = User::where('referred_by', $user->id)
                 ->select('id', 'name', 'created_at', 'updated_at')
                 ->latest()
@@ -82,6 +94,8 @@ class ReferralController extends Controller
                     'totalReferred' => $totalInvited,
                     'activeReferred' => $activeReferred,
                     'commissionRate' => (int) $commissionRate,
+                    'maxReferrals' => (int) $maxReferrals,
+                    'isLimitReached' => $isLimitReached,
                 ],
                 'referralLink' => config('app.frontend_url', 'https://shortlinkmu.com') . '/register?ref=' . $user->referral_code,
                 'referrals' => $referrals,
@@ -94,6 +108,7 @@ class ReferralController extends Controller
     /**
      * Get referrer info by referral code (PUBLIC - no auth required)
      * Used by frontend to show "Diundang oleh [Nama]" banner
+     * Also checks if referrer has reached their max referrals limit
      */
     public function getReferrerInfo(Request $request)
     {
@@ -102,15 +117,28 @@ class ReferralController extends Controller
         ]);
 
         $referrer = User::where('referral_code', $request->code)
-            ->select('id', 'name')
+            ->with('currentLevel')
+            ->select('id', 'name', 'current_level_id')
             ->first();
 
         if (!$referrer) {
             return $this->errorResponse('Referral code tidak valid', 404);
         }
 
+        // Check if referrer has reached their max referrals limit
+        $totalReferred = User::where('referred_by', $referrer->id)->count();
+        if ($referrer->currentLevel) {
+            $maxReferrals = $referrer->currentLevel->max_referrals ?? 10;
+        } else {
+            // Fallback to lowest level (Beginner) if referrer has no level
+            $lowestLevel = Level::orderBy('min_total_earnings', 'asc')->first();
+            $maxReferrals = $lowestLevel?->max_referrals ?? 10;
+        }
+        $isLimitReached = $totalReferred >= $maxReferrals;
+
         return $this->successResponse([
             'name' => $referrer->name,
+            'isLimitReached' => $isLimitReached,
         ], 'Referrer info retrieved');
     }
 
