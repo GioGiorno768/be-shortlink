@@ -7,34 +7,49 @@ return [
     | Cross-Origin Resource Sharing (CORS) Configuration
     |--------------------------------------------------------------------------
     |
-    | Here you may configure your settings for cross-origin resource sharing
-    | or "CORS". This determines what cross-origin operations may execute
-    | in web browsers. You are free to adjust these settings as needed.
+    | Settings for cross-origin resource sharing. Configured for production
+    | with shortlinkmu.com (frontend) and shortlinkmu.space (backend).
     |
     | To learn more: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
     |
     */
 
-
     'paths' => [
         'api/*',
-        'sanctum/csrf-cookie', // ✅ Breeze butuh ini
-        'login',               // ✅ Jika ada
-        'register',            // ✅ Jika ada
-        'logout',              // ✅ Jika ada
+        'sanctum/csrf-cookie',
+        'login',
+        'register',
+        'logout',
     ],
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => [
-        env('FRONTEND_URL', 'http://localhost:5173'),
-        'http://localhost:3000', // Main App (shortlinku)
-        'http://localhost:3001', // Viewer App (shortlinkmu-viewer)
-        'http://192.168.112.94:3001', 
-        'http://192.168.112.94:3000',
-    ],
+    /*
+    |--------------------------------------------------------------------------
+    | Allowed Origins
+    |--------------------------------------------------------------------------
+    |
+    | Production domains only. Localhost entries removed for security.
+    | Add localhost back only for local development.
+    |
+    */
+    'allowed_origins' => array_filter([
+        // Production domains
+        env('FRONTEND_URL', 'https://shortlinkmu.com'),
+        env('VIEWER_URL', 'https://go.shortlinkmu.com'),
+        'https://shortlinkmu.com',
+        'https://www.shortlinkmu.com',
+        'https://go.shortlinkmu.com',
+        
+        // Development (only enable when needed)
+        // 'http://localhost:3000',
+        // 'http://localhost:3001',
+    ]),
 
-    'allowed_origins_patterns' => [],
+    'allowed_origins_patterns' => [
+        // Allow all subdomains of shortlinkmu.com
+        '#^https?://.*\.shortlinkmu\.com$#',
+    ],
 
     'allowed_headers' => [
         'Content-Type',
@@ -42,13 +57,17 @@ return [
         'Authorization',
         'Accept',
         'Origin',
+        'X-CSRF-TOKEN',
+        'X-XSRF-TOKEN',
     ],
-
 
     'exposed_headers' => [],
 
-    'max_age' => 0,
+    // Cache preflight request for 24 hours
+    'max_age' => 86400,
 
-    'supports_credentials' => true, // ✅ True untuk cookie/credentials support
+    // Required for cookie/credentials support (Sanctum)
+    'supports_credentials' => true,
 
 ];
+

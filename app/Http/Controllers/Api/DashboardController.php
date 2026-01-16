@@ -7,6 +7,7 @@ use App\Models\Link;
 use App\Models\View;
 use App\Models\Payout;
 use App\Models\User;
+use App\Models\UserDailyStat;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Carbon\Carbon;
@@ -75,7 +76,10 @@ class DashboardController extends Controller
 
         $referralData = [
             'code' => $user->referral_code,
-            'users' => User::where('referred_by', $user->id)->count(), // Count directly from DB
+            // 🔧 OPTIMIZED: Cache referral count for 5 minutes
+            'users' => Cache::remember("referral_count:{$user->id}", 300, fn() => 
+                User::where('referred_by', $user->id)->count()
+            ),
             'referral_links' => [
                 [
                     'platform' => 'whatsapp',
@@ -117,6 +121,7 @@ class DashboardController extends Controller
 
 
     // 🔹 NEW ENDPOINT: statistik tren (harian/mingguan)
+    // 🔧 OPTIMIZED: Uses aggregate table for general queries, fallback to views for link-specific
     public function trends(Request $request)
     {
         $user = $request->user();
@@ -135,29 +140,46 @@ class DashboardController extends Controller
             return $this->successResponse(Cache::get($cacheKey), 'Trends data retrieved (cached)');
         }
 
-        // 🔹 Ambil views berdasarkan periode
-        $views = View::whereHas('link', function ($q) use ($user, $linkCode) {
-            $q->where('user_id', $user->id);
-            if ($linkCode)
-                $q->where('code', $linkCode);
-        })
-            ->where('created_at', '>=', $startDate)
-            ->get()
-            ->groupBy(fn($v) => $v->created_at->format('Y-m-d'));
+        // 🔧 OPTIMIZATION: Use aggregate table for general queries (no link filter)
+        if (!$linkCode) {
+            $trendData = UserDailyStat::where('user_id', $user->id)
+                ->where('date', '>=', $startDate->format('Y-m-d'))
+                ->orderBy('date')
+                ->get()
+                ->map(function ($stat) {
+                    return [
+                        'date' => $stat->date,
+                        'label' => Carbon::parse($stat->date)->format('d M'),
+                        'earnings' => round((float) $stat->earnings, 5),
+                        'clicks' => (int) $stat->valid_views, // clicks = total valid views
+                        'valid_clicks' => (int) $stat->valid_views,
+                    ];
+                });
+        } else {
+            // 🔹 Fallback: Use views table when filtering by specific link
+            $views = View::whereHas('link', function ($q) use ($user, $linkCode) {
+                $q->where('user_id', $user->id);
+                if ($linkCode)
+                    $q->where('code', $linkCode);
+            })
+                ->where('created_at', '>=', $startDate)
+                ->get()
+                ->groupBy(fn($v) => $v->created_at->format('Y-m-d'));
 
-        // 🔹 Format data per hari
-        $trendData = $views->map(function ($items, $date) {
-            return [
-                'date' => $date,
-                'label' => Carbon::parse($date)->format('d M'), // Added label for Chart XAxis
-                'earnings' => round($items->sum('earned'), 5),
-                'clicks' => $items->count(),
-                'valid_clicks' => $items->where('is_valid', true)->count(),
-            ];
-        })->values();
+            // 🔹 Format data per hari
+            $trendData = $views->map(function ($items, $date) {
+                return [
+                    'date' => $date,
+                    'label' => Carbon::parse($date)->format('d M'),
+                    'earnings' => round($items->sum('earned'), 5),
+                    'clicks' => $items->count(),
+                    'valid_clicks' => $items->where('is_valid', true)->count(),
+                ];
+            })->values();
 
-        // Pastikan urutan berdasarkan tanggal
-        $trendData = $trendData->sortBy('date')->values();
+            // Pastikan urutan berdasarkan tanggal
+            $trendData = $trendData->sortBy('date')->values();
+        }
 
         $data = [
             'period' => $period,

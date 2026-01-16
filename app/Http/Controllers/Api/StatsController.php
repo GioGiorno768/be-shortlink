@@ -29,73 +29,9 @@ class StatsController extends Controller
         $user = $request->user();
         $limit = $request->query('limit', 7);
 
-        // ============================================
-        // 🔧 CONFIG: Default Countries yang SELALU tampil
-        // Tinggal tambah/hapus country code di array ini
-        // untuk mengatur negara mana yang tampil sebagai default
-        // ============================================
-        $defaultCountryCodes = [
-            'ID',   // Indonesia
-            'US',   // United States
-            'DE',   // Germany
-            'PH',   // Philippines
-            'MY',   // Malaysia
-            'VN',   // Vietnam
-            'TH',   // Thailand
-            // 'IN', // India (uncomment jika mau tambah)
-            // 'GB', // United Kingdom (uncomment jika mau tambah)
-            // 'SG', // Singapore (uncomment jika mau tambah)
-        ];
-
-        // ============================================
-        // 🏷️ Country code to name mapping
-        // ============================================
-        $countryNames = [
-            // Southeast Asia
-            'ID' => 'Indonesia',
-            'MY' => 'Malaysia',
-            'SG' => 'Singapore',
-            'PH' => 'Philippines',
-            'VN' => 'Vietnam',
-            'TH' => 'Thailand',
-            // South Asia
-            'IN' => 'India',
-            'BD' => 'Bangladesh',
-            'PK' => 'Pakistan',
-            // Americas
-            'US' => 'United States',
-            'CA' => 'Canada',
-            'BR' => 'Brazil',
-            'MX' => 'Mexico',
-            'AR' => 'Argentina',
-            'CO' => 'Colombia',
-            'CL' => 'Chile',
-            'PE' => 'Peru',
-            // Europe
-            'GB' => 'United Kingdom',
-            'DE' => 'Germany',
-            'FR' => 'France',
-            'NL' => 'Netherlands',
-            'SE' => 'Sweden',
-            'NO' => 'Norway',
-            'DK' => 'Denmark',
-            'FI' => 'Finland',
-            'BE' => 'Belgium',
-            'AT' => 'Austria',
-            'CH' => 'Switzerland',
-            'IE' => 'Ireland',
-            // Others
-            'JP' => 'Japan',
-            'AU' => 'Australia',
-            'NZ' => 'New Zealand',
-            'RU' => 'Russia',
-            'TR' => 'Turkey',
-            'EG' => 'Egypt',
-            'ZA' => 'South Africa',
-            'KE' => 'Kenya',
-            'NG' => 'Nigeria',
-            'OTHER' => 'Other Countries',
-        ];
+        // 🔧 OPTIMIZED: Use centralized config for constants
+        $defaultCountryCodes = config('constants.default_countries');
+        $countryNames = config('constants.countries');
 
         // ============================================
         // 📊 Fetch user data dari aggregate table
@@ -149,42 +85,9 @@ class StatsController extends Controller
         $user = $request->user();
         $limit = $request->query('limit', 8);
 
-        // ============================================
-        // 🔧 CONFIG: Default Referrers yang SELALU tampil
-        // Tinggal tambah/hapus key di array ini untuk mengatur
-        // referrer mana yang tampil sebagai default
-        // ============================================
-        $defaultReferrerKeys = [
-            'direct',       // Direct / Email / SMS
-            'google',       // Google Search
-            'facebook',     // Facebook
-            'instagram',    // Instagram
-            'whatsapp',     // WhatsApp
-            'youtube',      // YouTube
-            'tiktok',       // TikTok
-            'telegram',     // Telegram
-            // 'twitter_x', // Twitter / X (uncomment jika mau tambah)
-            // 'other',     // Other (uncomment jika mau tambah)
-        ];
-
-        // ============================================
-        // 🏷️ Label mapping untuk setiap referrer key
-        // ============================================
-        $referrerLabels = [
-            'direct'    => 'Direct / Email / SMS',
-            'google'    => 'Google',
-            'facebook'  => 'Facebook',
-            'instagram' => 'Instagram',
-            'whatsapp'  => 'WhatsApp',
-            'youtube'   => 'YouTube',
-            'tiktok'    => 'TikTok',
-            'telegram'  => 'Telegram',
-            'twitter_x' => 'Twitter / X',
-            'linkedin'  => 'LinkedIn',
-            'pinterest' => 'Pinterest',
-            'reddit'    => 'Reddit',
-            'other'     => 'Other',
-        ];
+        // 🔧 OPTIMIZED: Use centralized config for constants
+        $defaultReferrerKeys = config('constants.default_referrers');
+        $referrerLabels = config('constants.referrer_labels');
 
         // ============================================
         // 📊 Fetch user data dari aggregate table
