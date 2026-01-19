@@ -19,8 +19,8 @@ class AuthenticatedSessionController extends Controller
     /**
      * Handle an incoming authentication request.
      */
-    public function store(LoginLogger $request)
-  //  public function store(LoginRequest $request)
+  //  public function store(LoginLogger $request)
+   public function store(LoginRequest $request)
     {
       try {
         // 🔒 CHECK IF LOGIN IS DISABLED
