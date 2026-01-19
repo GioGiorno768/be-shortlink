@@ -18,21 +18,37 @@ return [
 
     'paths' => [
         'api/*',
+        'auth/*', 
+        '*',
         'sanctum/csrf-cookie', // ✅ Breeze butuh ini
-        'login',               // ✅ Jika ada
-        'register',            // ✅ Jika ada
-        'logout',              // ✅ Jika ada
+        // 'login',               // ✅ Jika ada
+        // 'register',            // ✅ Jika ada
+        // 'logout',              // ✅ Jika ada
     ],
 
     'allowed_methods' => ['*'],
+    
+    'allowed_origins' => ['*'],
 
-    'allowed_origins' => [
-        env('FRONTEND_URL', 'http://localhost:5173'),
-        'http://localhost:3000', // Main App (shortlinku)
-        'http://localhost:3001', // Viewer App (shortlinkmu-viewer)
-        'http://192.168.112.94:3001', 
-        'http://192.168.112.94:3000',
-    ],
+   // 'allowed_origins' => ['https://shortlinkmu.site', 'https://shortlinkmu.space'],
+
+    // env('FRONTEND_URL', 'http://localhost:5173'),
+    // 'http://localhost:3000',        // Dev - Main App
+    // 'http://localhost:3001',        // Dev - Viewer App
+    // 'http://localhost:5173',        // Dev - Vite default
+    // // .site domain
+    // 'https://shortlinkmu.site',
+    // 'https://www.shortlinkmu.site',
+    // 'https://api.shortlinkmu.site',
+    // // .space domain
+    // 'https://shortlinkmu.space',
+    // 'https://www.shortlinkmu.space',
+    // 'https://api.shortlinkmu.space',
+    // // .my.id domain (backend)
+    // 'https://slmu.my.id',
+    // 'https://www.slmu.my.id',
+
+
 
     'allowed_origins_patterns' => [],
 
