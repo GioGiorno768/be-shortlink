@@ -192,6 +192,30 @@ class LinkController extends Controller
             RateLimiter::hit($rateKey, $rateLimitTTL);
         }
 
+        // 🔧 Check if URL already exists for this user (reuse existing shortlink)
+        // Skip this check if user provided a custom alias (they want a new link)
+        if (!isset($validated['alias'])) {
+            $existingLink = Link::where('user_id', $userId)
+                ->where('original_url', $validated['original_url'])
+                ->first();
+
+            if ($existingLink) {
+                // Return existing shortlink instead of creating new one
+                return $this->successResponse([
+                    'original_url' => $existingLink->original_url,
+                    'short_url' => url("/{$existingLink->code}"),
+                    'code' => $existingLink->code,
+                    'title' => $existingLink->title,
+                    'expired_at' => $existingLink->expired_at,
+                    'user_id' => $existingLink->user_id,
+                    'is_guest' => !$user,
+                    'earn_per_click' => (float) $existingLink->earn_per_click,
+                    'reused' => true, // Flag bahwa ini reuse, bukan link baru
+                    'source' => 'database',
+                ], 'Shortlink already exists for this URL.', 200);
+            }
+        }
+
         $tries = 0;
         $maxTries = 4;
         $link = null;
