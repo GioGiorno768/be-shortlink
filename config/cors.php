@@ -28,9 +28,9 @@ return [
 
     'allowed_methods' => ['*'],
     
-    'allowed_origins' => ['*'],
+    // 'allowed_origins' => ['*'],
 
-   // 'allowed_origins' => ['https://shortlinkmu.site', 'https://shortlinkmu.space'],
+    'allowed_origins' => ['https://www.shortlinkmu.site', 'https://shortlinkmu.site', 'https://shortlinkmu.space', 'https://shortlinkmu.com', 'https://www.shortlinkmu.com', 'http://localhost:3000', 'http://localhost:5173', 'https://technosia.web.id', 'https://www.technosia.web.id', 'http://localhost:3001'],
 
     // env('FRONTEND_URL', 'http://localhost:5173'),
     // 'http://localhost:3000',        // Dev - Main App

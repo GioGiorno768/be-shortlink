@@ -147,12 +147,6 @@ class RegisteredUserController extends Controller
                     'reference_id' => $user->referred_by, // ID of the referrer
                 ]);
             }
-
-            // 🛡️ ANTI-FRAUD: Increment same_ip_referral_count if IP matches referrer's IP
-            $referrer = User::find($user->referred_by);
-            if ($referrer && $referrer->last_login_ip && $loginIp === $referrer->last_login_ip) {
-                $referrer->increment('same_ip_referral_count');
-            }
         }
 
         return response([

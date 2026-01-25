@@ -43,6 +43,7 @@ class User extends Authenticatable implements MustVerifyEmail
         'last_active_at', // <-- TAMBAHKAN INI
         'last_device_fingerprint', // Anti-fraud
         'last_login_ip',           // Anti-fraud
+        'same_ip_referral_count',  // Anti-fraud: count referrals from same IP as referrer
         'avatar',                  // User avatar (avatar-1, avatar-2, etc.)
         'current_level_id',        // User's current level
     ];

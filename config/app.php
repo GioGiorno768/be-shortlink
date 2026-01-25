@@ -132,6 +132,7 @@ return [
     | ke aplikasi frontend (React, Vue, dll.) Anda.
     |
     */
-    'frontend_url' => env('FRONTEND_URL', 'http://localhost:5173/'),
+    'frontend_url' => env('FRONTEND_URL', 'http://localhost:3000'),
+    'viewer_url' => env('VIEWER_URL', 'http://localhost:3001'),
 
 ];

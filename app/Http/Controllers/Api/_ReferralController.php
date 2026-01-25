@@ -144,7 +144,7 @@ class ReferralController extends Controller
 
     /**
      * Check if user is eligible for referral bonus (PUBLIC - no auth required)
-     * Anti-fraud: checks if device fingerprint already exists or if referrer has too many same-IP referrals
+     * Anti-fraud: checks if device fingerprint or IP already exists in database
      */
     public function checkEligibility(Request $request)
     {
@@ -162,9 +162,9 @@ class ReferralController extends Controller
             $ip = '36.84.69.10'; // Test IP for local dev
         }
 
-        // 1. Validasi referral code dan ambil referrer dengan IP-nya
+        // 1. Validasi referral code
         $referrer = User::where('referral_code', $referralCode)
-            ->select('id', 'name', 'last_login_ip', 'same_ip_referral_count')
+            ->select('id', 'name')
             ->first();
 
         if (!$referrer) {
@@ -181,7 +181,6 @@ class ReferralController extends Controller
         $maxAccountsPerIp = $referralSetting?->value['max_accounts_per_ip'] ?? 2;
 
         // 2. Cek fingerprint di database (if enabled)
-        // Jika fingerprint visitor sudah ada di database = device sudah pernah register
         if ($fingerprintCheckEnabled && $visitorId) {
             $fingerprintExists = User::where('last_device_fingerprint', $visitorId)->exists();
 
@@ -194,22 +193,15 @@ class ReferralController extends Controller
         }
 
         // 3. Cek IP limit (if enabled)
-        // LOGIC BARU: Cek apakah IP visitor SAMA dengan IP referrer
-        // Jika sama, cek apakah referrer sudah mencapai limit same-IP referrals
         if ($ipLimitEnabled) {
-            $referrerIp = $referrer->last_login_ip;
+            $accountsFromIp = User::where('last_login_ip', $ip)->count();
 
-            // Hanya cek jika IP visitor === IP referrer (same network)
-            if ($referrerIp && $ip === $referrerIp) {
-                // Cek apakah referrer sudah mencapai limit referrals dari IP yang sama
-                if ($referrer->same_ip_referral_count >= $maxAccountsPerIp) {
-                    return $this->successResponse([
-                        'eligible' => false,
-                        'reason' => 'ip_limit_exceeded',
-                    ]);
-                }
+            if ($accountsFromIp >= $maxAccountsPerIp) {
+                return $this->successResponse([
+                    'eligible' => false,
+                    'reason' => 'ip_limit_exceeded',
+                ]);
             }
-            // Jika IP berbeda dari referrer = always eligible (no IP restriction)
         }
 
         // 4. Eligible - passed all checks

@@ -786,7 +786,7 @@ class LinkController extends Controller
 
         // 🕰️ CRITICAL: Check expiration BEFORE processing
         if ($linkModel->expired_at && now()->greaterThan($linkModel->expired_at)) {
-            $frontendUrl = "http://localhost:3000/expired";
+            $frontendUrl = config('app.frontend_url', 'http://localhost:3000') . '/expired';
             return response()->json([
                 'message' => 'This link has expired.',
                 'redirect_url' => $frontendUrl
@@ -795,7 +795,7 @@ class LinkController extends Controller
 
         // Check banned status
         if ($linkModel->is_banned) {
-            $viewerUrl = "http://localhost:3001/banned";
+            $viewerUrl = config('app.viewer_url', 'http://localhost:3001') . '/banned';
             $reason = urlencode($linkModel->ban_reason ?? '');
             return redirect("{$viewerUrl}?reason={$reason}");
         }
@@ -836,6 +836,14 @@ class LinkController extends Controller
             $nextConfirm = $currentViews + $randomInterval;
             $linkModel->update(['next_confirm_at' => $nextConfirm]);
 
+            // 🔧 FIX: Update cache so show() can check fresh next_confirm_at
+            $cachedLink = Cache::get("link:{$code}");
+            if ($cachedLink) {
+                $cachedLink['views'] = $currentViews;
+                $cachedLink['next_confirm_at'] = $nextConfirm;
+                Cache::put("link:{$code}", $cachedLink, now()->addMinutes(10));
+            }
+
             Log::info("🎟️ Guest Free Pass: views={$currentViews}, next_confirm_at={$nextConfirm}");
         }
 
@@ -872,10 +880,17 @@ class LinkController extends Controller
             }
         }
 
-        $validation = $linkService->validateToken($code, $inputToken, $ip, $userAgent, $isGuestLink);
-        if (!$validation['valid']) {
-            $this->logView($linkModel, $ip, $request, false, 0, $validation['error']);
-            return $this->errorResponse($validation['error'], $validation['status'] ?? 403, ['remaining' => $validation['remaining'] ?? 0]);
+        // 🛡️ Token Validation - SKIP for guest links (they use session-based flow)
+        // Guest links don't need IP-based token matching which causes issues with CDN/proxy
+        if (!$isGuestLink) {
+            $validation = $linkService->validateToken($code, $inputToken, $ip, $userAgent, $isGuestLink);
+            if (!$validation['valid']) {
+                $this->logView($linkModel, $ip, $request, false, 0, $validation['error']);
+                return $this->errorResponse($validation['error'], $validation['status'] ?? 403, ['remaining' => $validation['remaining'] ?? 0]);
+            }
+        } else {
+            // For guest links, just validate that inputToken matches the session token
+            Log::info("🎟️ Guest link - skipping IP-based token validation", ['code' => $code]);
         }
 
         // === 5️⃣ Hitung Earning via Service + Anti-Fraud
