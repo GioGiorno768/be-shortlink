@@ -257,6 +257,10 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::get('/settings/link', [AdminSettingController::class, 'getLinkSettings']);
     Route::put('/settings/link', [AdminSettingController::class, 'updateLinkSettings']);
 
+    // Settings: Currency Rates (Manual Exchange Rates)
+    Route::get('/settings/currency-rates', [AdminSettingController::class, 'getCurrencyRates']);
+    Route::put('/settings/currency-rates', [AdminSettingController::class, 'updateCurrencyRates']);
+
     // Report Abuse
     Route::get('/reports', [AdminReportController::class, 'index']);
     Route::get('/reports/stats', [AdminReportController::class, 'stats']);
@@ -413,3 +417,6 @@ Route::post('/verify-backdoor-code', [\App\Http\Controllers\Api\SuperAdmin\Gener
 
 // 🚧 Public API: Get maintenance status (for middleware check)
 Route::get('/settings/maintenance', [\App\Http\Controllers\Api\SuperAdmin\GeneralSettingsController::class, 'getMaintenanceStatus']);
+
+// 💱 Public API: Get currency rates (for frontend display conversion)
+Route::get('/settings/currency-rates', [AdminSettingController::class, 'getCurrencyRates']);

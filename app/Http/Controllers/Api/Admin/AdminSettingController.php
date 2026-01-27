@@ -485,4 +485,81 @@ class AdminSettingController extends Controller
 
         return $this->successResponse($data, 'Link settings updated successfully.');
     }
+
+    /**
+     * Get Currency Exchange Rates
+     */
+    public function getCurrencyRates()
+    {
+        $setting = Setting::where('key', 'currency_rates')->first();
+
+        // Default currencies
+        $defaults = [
+            'currencies' => [
+                ['code' => 'USD', 'name' => 'US Dollar', 'flag' => 'us', 'symbol' => '$', 'rate' => 1],
+                ['code' => 'IDR', 'name' => 'Indonesian Rupiah', 'flag' => 'id', 'symbol' => 'Rp', 'rate' => 16000],
+                ['code' => 'EUR', 'name' => 'Euro', 'flag' => 'eu', 'symbol' => '€', 'rate' => 0.92],
+                ['code' => 'GBP', 'name' => 'British Pound', 'flag' => 'gb', 'symbol' => '£', 'rate' => 0.79],
+                ['code' => 'MYR', 'name' => 'Malaysian Ringgit', 'flag' => 'my', 'symbol' => 'RM', 'rate' => 4.50],
+                ['code' => 'SGD', 'name' => 'Singapore Dollar', 'flag' => 'sg', 'symbol' => 'S$', 'rate' => 1.35],
+            ],
+            'last_updated' => now()->toISOString(),
+        ];
+
+        $data = $setting ? $setting->value : $defaults;
+
+        return $this->successResponse($data, 'Currency rates retrieved');
+    }
+
+    /**
+     * Update Currency Exchange Rates
+     */
+    public function updateCurrencyRates(Request $request)
+    {
+        $request->validate([
+            'currencies' => 'required|array|min:1',
+            'currencies.*.code' => 'required|string|max:10',
+            'currencies.*.name' => 'required|string|max:100',
+            'currencies.*.flag' => 'required|string|max:10',
+            'currencies.*.symbol' => 'required|string|max:10',
+            'currencies.*.rate' => 'required|numeric|min:0',
+        ]);
+
+        // Ensure USD is always present with rate = 1
+        $currencies = collect($request->currencies);
+        $hasUSD = $currencies->contains('code', 'USD');
+
+        if (!$hasUSD) {
+            $currencies->prepend([
+                'code' => 'USD',
+                'name' => 'US Dollar',
+                'flag' => 'us',
+                'symbol' => '$',
+                'rate' => 1,
+            ]);
+        } else {
+            // Force USD rate to be 1
+            $currencies = $currencies->map(function ($c) {
+                if ($c['code'] === 'USD') {
+                    $c['rate'] = 1;
+                }
+                return $c;
+            });
+        }
+
+        $data = [
+            'currencies' => $currencies->values()->toArray(),
+            'last_updated' => now()->toISOString(),
+        ];
+
+        Setting::updateOrCreate(
+            ['key' => 'currency_rates'],
+            ['value' => $data]
+        );
+
+        // Clear cache
+        Cache::forget('currency_rates');
+
+        return $this->successResponse($data, 'Currency rates updated successfully.');
+    }
 }
