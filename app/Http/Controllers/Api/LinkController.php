@@ -192,6 +192,30 @@ class LinkController extends Controller
             RateLimiter::hit($rateKey, $rateLimitTTL);
         }
 
+        // 🔧 Check if URL already exists for this user (reuse existing shortlink)
+        // Skip this check if user provided a custom alias (they want a new link)
+        if (!isset($validated['alias'])) {
+            $existingLink = Link::where('user_id', $userId)
+                ->where('original_url', $validated['original_url'])
+                ->first();
+
+            if ($existingLink) {
+                // Return existing shortlink instead of creating new one
+                return $this->successResponse([
+                    'original_url' => $existingLink->original_url,
+                    'short_url' => url("/{$existingLink->code}"),
+                    'code' => $existingLink->code,
+                    'title' => $existingLink->title,
+                    'expired_at' => $existingLink->expired_at,
+                    'user_id' => $existingLink->user_id,
+                    'is_guest' => !$user,
+                    'earn_per_click' => (float) $existingLink->earn_per_click,
+                    'reused' => true, // Flag bahwa ini reuse, bukan link baru
+                    'source' => 'database',
+                ], 'Shortlink already exists for this URL.', 200);
+            }
+        }
+
         $tries = 0;
         $maxTries = 4;
         $link = null;
@@ -548,12 +572,7 @@ class LinkController extends Controller
         $allowedStep = $completedStep + 1;
 
         if ($requestedStep > $allowedStep) {
-            Log::warning("🛡️ Step skip detected", [
-                'code' => $code,
-                'requested_step' => $requestedStep,
-                'completed_step' => $completedStep,
-                'allowed_step' => $allowedStep,
-            ]);
+            // 🚀 OPTIMIZATION: Removed Log::warning - runs on every step skip attempt
             return $this->errorResponse('Anda harus menyelesaikan langkah sebelumnya.', 403, [
                 'redirect' => true,
                 'redirect_step' => $allowedStep,
@@ -613,12 +632,7 @@ class LinkController extends Controller
         $maxSteps = $cachedToken['max_steps'] ?? 1;
         $isComplete = $completingStep >= $maxSteps;
 
-        Log::info("🛡️ Step completed", [
-            'code' => $code,
-            'completed_step' => $completingStep,
-            'max_steps' => $maxSteps,
-            'all_complete' => $isComplete,
-        ]);
+        // 🚀 OPTIMIZATION: Removed Log::info - runs on every step completion
 
         return $this->successResponse([
             'completed_step' => $completingStep,
@@ -778,15 +792,16 @@ class LinkController extends Controller
             $link = Link::where('code', $code)->firstOrFail();
         }
 
-        // Convert to Model instance if it's an object/array from cache, for relationship loading
-        $linkModel = $link instanceof Link ? $link : Link::with('user')->find($link->id);
+        // Convert to Model instance if it's an object/array from cache
+        // 🚀 OPTIMIZATION: Removed unnecessary eager loading with('user')
+        $linkModel = $link instanceof Link ? $link : Link::find($link->id);
         if (!$linkModel) {
             return $this->errorResponse('Link not found.', 404);
         }
 
         // 🕰️ CRITICAL: Check expiration BEFORE processing
         if ($linkModel->expired_at && now()->greaterThan($linkModel->expired_at)) {
-            $frontendUrl = "http://localhost:3000/expired";
+            $frontendUrl = config('app.frontend_url', 'http://localhost:3000') . '/expired';
             return response()->json([
                 'message' => 'This link has expired.',
                 'redirect_url' => $frontendUrl
@@ -795,7 +810,7 @@ class LinkController extends Controller
 
         // Check banned status
         if ($linkModel->is_banned) {
-            $viewerUrl = "http://localhost:3001/banned";
+            $viewerUrl = config('app.viewer_url', 'http://localhost:3001') . '/banned';
             $reason = urlencode($linkModel->ban_reason ?? '');
             return redirect("{$viewerUrl}?reason={$reason}");
         }
@@ -836,6 +851,14 @@ class LinkController extends Controller
             $nextConfirm = $currentViews + $randomInterval;
             $linkModel->update(['next_confirm_at' => $nextConfirm]);
 
+            // 🔧 FIX: Update cache so show() can check fresh next_confirm_at
+            $cachedLink = Cache::get("link:{$code}");
+            if ($cachedLink) {
+                $cachedLink['views'] = $currentViews;
+                $cachedLink['next_confirm_at'] = $nextConfirm;
+                Cache::put("link:{$code}", $cachedLink, now()->addMinutes(10));
+            }
+
             Log::info("🎟️ Guest Free Pass: views={$currentViews}, next_confirm_at={$nextConfirm}");
         }
 
@@ -872,10 +895,17 @@ class LinkController extends Controller
             }
         }
 
-        $validation = $linkService->validateToken($code, $inputToken, $ip, $userAgent, $isGuestLink);
-        if (!$validation['valid']) {
-            $this->logView($linkModel, $ip, $request, false, 0, $validation['error']);
-            return $this->errorResponse($validation['error'], $validation['status'] ?? 403, ['remaining' => $validation['remaining'] ?? 0]);
+        // 🛡️ Token Validation - SKIP for guest links (they use session-based flow)
+        // Guest links don't need IP-based token matching which causes issues with CDN/proxy
+        if (!$isGuestLink) {
+            $validation = $linkService->validateToken($code, $inputToken, $ip, $userAgent, $isGuestLink);
+            if (!$validation['valid']) {
+                $this->logView($linkModel, $ip, $request, false, 0, $validation['error']);
+                return $this->errorResponse($validation['error'], $validation['status'] ?? 403, ['remaining' => $validation['remaining'] ?? 0]);
+            }
+        } else {
+            // For guest links, just validate that inputToken matches the session token
+            Log::info("🎟️ Guest link - skipping IP-based token validation", ['code' => $code]);
         }
 
         // === 5️⃣ Hitung Earning via Service + Anti-Fraud

@@ -25,7 +25,8 @@ class RegisteredUserController extends Controller
     public function store(Request $request): Response
     {
         // 🔒 CHECK GENERAL SETTINGS (disable_registration & invite_only_mode)
-        $generalSettings = Cache::remember('general_settings', 300, function () {
+        // 🚀 OPTIMIZATION: Increased cache TTL from 300s to 3600s (settings rarely change)
+        $generalSettings = Cache::remember('general_settings', 3600, function () {
             $setting = Setting::where('key', 'general_settings')->first();
             return $setting ? $setting->value : [
                 'disable_registration' => false,
@@ -51,14 +52,8 @@ class RegisteredUserController extends Controller
             }
         }
 
-        // 🔥🔥 CEK STATUS REGISTRASI (legacy) 🔥🔥
-        $setting = Setting::where('key', 'registration_settings')->first();
-        if ($setting && isset($setting->value['enabled']) && !$setting->value['enabled']) {
-            return response([
-                'message' => $setting->value['message'] ?? 'Registration is currently closed.',
-                'error' => 'Registration Closed'
-            ], 403);
-        }
+        // 🚀 OPTIMIZATION: Removed redundant registration_settings query
+        // Legacy check moved to general_settings above
 
         // 1. Validasi Input
         $request->validate([
@@ -146,6 +141,12 @@ class RegisteredUserController extends Controller
                     'description' => 'Signup bonus dari referral',
                     'reference_id' => $user->referred_by, // ID of the referrer
                 ]);
+            }
+
+            // 🛡️ ANTI-FRAUD: Increment same_ip_referral_count if IP matches referrer's IP
+            $referrer = User::find($user->referred_by);
+            if ($referrer && $referrer->last_login_ip && $loginIp === $referrer->last_login_ip) {
+                $referrer->increment('same_ip_referral_count');
             }
         }
 

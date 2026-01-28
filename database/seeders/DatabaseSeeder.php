@@ -30,6 +30,9 @@ class DatabaseSeeder extends Seeder
             SettingSeeder::class,
             AdminSeeder::class,
             SuperAdminSeeder::class,
+            AdLevelConfigSeeder::class,
+            GlobalFeatureSeeder::class,
+            AdRateSeeder::class,
         ]);
 
         // Levels with full styling data

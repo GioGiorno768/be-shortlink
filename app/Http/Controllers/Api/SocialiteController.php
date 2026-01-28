@@ -52,6 +52,7 @@ class SocialiteController extends Controller
 
                     // 🎁 Handle Referral Code
                     $referrerId = null;
+                    $referrer = null;
                     if ($request->referral_code) {
                         $referrer = User::where('referral_code', $request->referral_code)->first();
                         if ($referrer) {
@@ -70,6 +71,15 @@ class SocialiteController extends Controller
                         'referral_code' => User::generateReferralCode(),
                         'referred_by' => $referrerId, // 🎁 Link to referrer
                     ]);
+
+                    // 🛡️ ANTI-FRAUD: Increment same_ip_referral_count if IP matches referrer's IP
+                    $loginIpForReferral = $request->ip();
+                    if (app()->environment('local') && $loginIpForReferral === '127.0.0.1') {
+                        $loginIpForReferral = '36.84.69.10';
+                    }
+                    if ($referrer && $referrer->last_login_ip && $loginIpForReferral === $referrer->last_login_ip) {
+                        $referrer->increment('same_ip_referral_count');
+                    }
                 }
             }
 

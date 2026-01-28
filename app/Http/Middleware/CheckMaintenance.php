@@ -17,7 +17,8 @@ class CheckMaintenance
     public function handle(Request $request, Closure $next): Response
     {
         // Get general settings from cache
-        $settings = Cache::remember('general_settings', 300, function () {
+        // 🚀 OPTIMIZATION: Increased cache TTL from 300s to 3600s
+        $settings = Cache::remember('general_settings', 3600, function () {
             $setting = Setting::where('key', 'general_settings')->first();
             return $setting ? $setting->value : [
                 'maintenance_mode' => false,

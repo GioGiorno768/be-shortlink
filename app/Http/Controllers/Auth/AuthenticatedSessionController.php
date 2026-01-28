@@ -19,10 +19,13 @@ class AuthenticatedSessionController extends Controller
     /**
      * Handle an incoming authentication request.
      */
-    public function store(LoginRequest $request)
+  //  public function store(LoginLogger $request)
+   public function store(LoginRequest $request)
     {
+      try {
         // 🔒 CHECK IF LOGIN IS DISABLED
-        $generalSettings = Cache::remember('general_settings', 300, function () {
+        // 🚀 OPTIMIZATION: Increased cache TTL from 300s to 3600s
+        $generalSettings = Cache::remember('general_settings', 3600, function () {
             $setting = Setting::where('key', 'general_settings')->first();
             return $setting ? $setting->value : ['disable_login' => false];
         });
@@ -41,21 +44,21 @@ class AuthenticatedSessionController extends Controller
         // ]);
 
         // // ✅ Cari user by email
-        // $user = User::where('email', $request->email)->first();
+        $user = User::where('email', $request->email)->first();
 
         // // ✅ Validasi password
-        // if (!$user || !Hash::check($request->password, $user->password)) {
-        //     throw ValidationException::withMessages([
-        //         'email' => ['The provided credentials are incorrect.'],
-        //     ]);
-        // }
+        if (!$user || !Hash::check($request->password, $user->password)) {
+             throw ValidationException::withMessages([
+                 'email' => ['The provided credentials are incorrect.'],
+             ]);
+        }
 
-        $request->authenticate();
+        // $request->authenticate();
 
         // $request->session()->regenerate();
 
         /** @var \App\Models\User $user */
-        $user = Auth::user();
+       //  $user = Auth::user();
 
         // 🔥🔥 CEK STATUS BANNED 🔥🔥
         if ($user->is_banned) {
@@ -81,25 +84,31 @@ class AuthenticatedSessionController extends Controller
         // ✅ Generate token (Sanctum)
         $token = $user->createToken('api_token')->plainTextToken;
 
+ 	try {
         // 📝 Catat Login History
-        LoginLogger::record($user);
+       	    LoginLogger::record($user);
 
+	} catch (\Exception $e){
+
+	  \Log::warning('LoginLogger failed: ' . $e->getMessage());
+	}
         // 🛡️ Save Device Fingerprint for Self-Click Detection
         $visitorId = $request->input('visitor_id');
 
         $loginIp = $request->ip();
         if (app()->environment('local') && $loginIp === '127.0.0.1') {
             $loginIp = '36.84.69.10';
-            // $loginIp = '8.8.8.8';
         }
 
-        \Log::info('📝 LOGIN - Received Data', [
-            'user_id' => $user->id,
-            'user_email' => $user->email,
-            'visitor_id_received' => $visitorId,
-            'login_ip' => $loginIp,
-            'all_request_data' => $request->all()
-        ]);
+        // 🚀 OPTIMIZATION: Only log in local/debug environment
+        if (app()->environment('local') && config('app.debug')) {
+            \Log::info('📝 LOGIN - Received Data', [
+                'user_id' => $user->id,
+                'user_email' => $user->email,
+                'visitor_id_received' => $visitorId,
+                'login_ip' => $loginIp,
+            ]);
+        }
 
         $updateData = [];
         if ($visitorId) {
@@ -110,22 +119,8 @@ class AuthenticatedSessionController extends Controller
         }
 
         if (!empty($updateData)) {
-            \Log::info('💾 LOGIN - Updating User', [
-                'user_id' => $user->id,
-                'update_data' => $updateData
-            ]);
-
+            // 🚀 OPTIMIZATION: Removed excessive logging and unnecessary refresh()
             $user->update($updateData);
-
-            // Verify update
-            $user->refresh();
-            \Log::info('✅ LOGIN - Update Complete', [
-                'user_id' => $user->id,
-                'last_device_fingerprint' => $user->last_device_fingerprint,
-                'last_login_ip' => $user->last_login_ip
-            ]);
-        } else {
-            \Log::warning('⚠️ LOGIN - No data to update (visitor_id or IP missing)');
         }
 
         return response()->json([
@@ -139,10 +134,24 @@ class AuthenticatedSessionController extends Controller
                 'role' => $user->role,
             ]
         ]);
+     } catch (ValidationException $e) {
+         throw $e;
+     } catch (\Exception $e) {
 
-        // return response()->noContent();
+	 \Log::error('LOGIN ERROR: ' . $e->getMessage(), [
+        	'file' => $e->getFile(),
+		'line' => $e->getLine(),
+		'trace' => $e->getTraceAsString(),
+		'email'=> $request->email ?? 'unknown',
+	]);
+	return response()->json([
+		'status' => 'error',
+		'message'=>'login failed, please try egain.',
+		'debug'=>app()->environment('local') ? $e->getMessage() : null,
+	],500);
+	// return response()->noContent();
     }
-
+   }
     /**
      * Destroy an authenticated session (logout).
      */
